@@ -1,0 +1,96 @@
+import { app, safeStorage } from 'electron'
+import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { join } from 'path'
+import { DEFAULT_MODEL, type SettingsUpdate, type SettingsView } from '@shared/types'
+
+interface StoredSettings {
+  /** base64 of safeStorage-encrypted key, or null */
+  deepgramKeyEnc: string | null
+  anthropicKeyEnc: string | null
+  model: string
+}
+
+const DEFAULTS: StoredSettings = {
+  deepgramKeyEnc: null,
+  anthropicKeyEnc: null,
+  model: DEFAULT_MODEL
+}
+
+function settingsPath(): string {
+  return join(app.getPath('userData'), 'settings.json')
+}
+
+let cache: StoredSettings | null = null
+
+function load(): StoredSettings {
+  if (cache) return cache
+  try {
+    if (existsSync(settingsPath())) {
+      cache = { ...DEFAULTS, ...JSON.parse(readFileSync(settingsPath(), 'utf8')) }
+      return cache!
+    }
+  } catch (err) {
+    console.error('settings: failed to read, using defaults', err)
+  }
+  cache = { ...DEFAULTS }
+  return cache
+}
+
+function persist(s: StoredSettings): void {
+  cache = s
+  writeFileSync(settingsPath(), JSON.stringify(s, null, 2))
+}
+
+function encrypt(plain: string): string {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('OS keychain encryption unavailable')
+  }
+  return safeStorage.encryptString(plain).toString('base64')
+}
+
+function decrypt(enc: string | null): string | null {
+  if (!enc) return null
+  try {
+    return safeStorage.decryptString(Buffer.from(enc, 'base64'))
+  } catch (err) {
+    console.error('settings: failed to decrypt stored key', err)
+    return null
+  }
+}
+
+export function getSettingsView(): SettingsView {
+  const s = load()
+  return {
+    deepgramKeySet: s.deepgramKeyEnc !== null,
+    anthropicKeySet: s.anthropicKeyEnc !== null,
+    model: s.model
+  }
+}
+
+export function updateSettings(update: SettingsUpdate): SettingsView {
+  const s = { ...load() }
+  if (update.deepgramKey !== undefined) {
+    s.deepgramKeyEnc = update.deepgramKey ? encrypt(update.deepgramKey) : null
+  }
+  if (update.anthropicKey !== undefined) {
+    s.anthropicKeyEnc = update.anthropicKey ? encrypt(update.anthropicKey) : null
+  }
+  if (update.model !== undefined && update.model.trim()) {
+    s.model = update.model.trim()
+  }
+  persist(s)
+  return getSettingsView()
+}
+
+/** Main-process-only accessors for the actual key material. */
+export function getDeepgramKey(): string | null {
+  return decrypt(load().deepgramKeyEnc)
+}
+
+export function getAnthropicKey(): string | null {
+  return decrypt(load().anthropicKeyEnc)
+}
+
+export function getModel(): string {
+  return load().model
+}
