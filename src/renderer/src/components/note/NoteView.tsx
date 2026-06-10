@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import type { Meeting } from '@shared/types'
 import { useActiveMeetingStore } from '../../stores/activeMeetingStore'
+import { useEnhanceStore } from '../../stores/enhanceStore'
 import NoteEditor from './NoteEditor'
 import TranscriptPanel from './TranscriptPanel'
+import { EnhancedDoc, StreamingPreview } from './EnhancedView'
 
 function RecordButton({ meetingId }: { meetingId: string }): React.JSX.Element {
   const { recorderState, recordingMeetingId, micLevel, startRecording, stopRecording } =
@@ -73,10 +75,13 @@ export default function NoteView(): React.JSX.Element {
   const [meeting, setMeeting] = useState<Meeting | null>(null)
   const [title, setTitle] = useState('')
   const [showTranscript, setShowTranscript] = useState(true)
+  const [tab, setTab] = useState<'notes' | 'enhanced'>('notes')
+  const [enhanceError, setEnhanceError] = useState<string | null>(null)
   const { finals, interim, loadFinals, clearTranscript, recordingMeetingId, statusDetail } =
     useActiveMeetingStore()
+  const enhance = useEnhanceStore()
 
-  useEffect(() => {
+  const reload = useCallback(() => {
     if (!id) return
     void window.api.invoke('meetings:get', id).then((result) => {
       if (!result) return
@@ -91,6 +96,26 @@ export default function NoteView(): React.JSX.Element {
       }
     })
   }, [id, loadFinals, clearTranscript])
+
+  useEffect(() => reload(), [reload])
+
+  // Reload when an enhancement result lands (updates doc + maybe auto-title)
+  useEffect(() => {
+    if (enhance.savedVersion > 0) {
+      reload()
+      setTab('enhanced')
+    }
+  }, [enhance.savedVersion, reload])
+
+  const isStreamingThis = enhance.streamingId === id
+
+  async function onEnhance(): Promise<void> {
+    if (!id) return
+    setEnhanceError(null)
+    setTab('enhanced')
+    const err = await enhance.start(id)
+    if (err) setEnhanceError(err)
+  }
 
   const saveTitle = useCallback(
     (value: string) => {
@@ -124,6 +149,29 @@ export default function NoteView(): React.JSX.Element {
         >
           Transcript
         </button>
+        {isStreamingThis ? (
+          <button
+            onClick={() => enhance.cancel()}
+            className="rounded-md border border-stone-300 px-3 py-1.5 text-sm text-stone-600 hover:bg-stone-100"
+          >
+            Cancel
+          </button>
+        ) : (
+          <button
+            onClick={onEnhance}
+            disabled={recordingMeetingId === id || finals.length === 0}
+            title={
+              finals.length === 0
+                ? 'Record the meeting first'
+                : recordingMeetingId === id
+                  ? 'Stop recording first'
+                  : undefined
+            }
+            className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-amber-700 disabled:opacity-40"
+          >
+            ✨ Enhance
+          </button>
+        )}
         <RecordButton meetingId={id} />
       </header>
 
@@ -135,7 +183,44 @@ export default function NoteView(): React.JSX.Element {
 
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-y-auto px-8 py-6">
-          {meeting && <NoteEditor meetingId={id} initialContent={meeting.notesJson} />}
+          {(meeting?.enhancedJson || isStreamingThis) && (
+            <div className="mb-4 flex gap-1 border-b border-stone-200">
+              {(['notes', 'enhanced'] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`-mb-px border-b-2 px-3 py-1.5 text-sm ${
+                    tab === t
+                      ? 'border-amber-600 font-medium text-stone-800'
+                      : 'border-transparent text-stone-400 hover:text-stone-600'
+                  }`}
+                >
+                  {t === 'notes' ? 'My notes' : 'Enhanced'}
+                </button>
+              ))}
+            </div>
+          )}
+          {enhanceError && (
+            <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {enhanceError}
+            </div>
+          )}
+          {enhance.error && tab === 'enhanced' && !enhanceError && (
+            <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {enhance.error}
+            </div>
+          )}
+          <div className={tab === 'notes' ? '' : 'hidden'}>
+            {meeting && <NoteEditor meetingId={id} initialContent={meeting.notesJson} />}
+          </div>
+          {tab === 'enhanced' &&
+            (isStreamingThis ? (
+              <StreamingPreview markdown={enhance.buffer} />
+            ) : meeting?.enhancedJson ? (
+              <EnhancedDoc docJson={meeting.enhancedJson} />
+            ) : (
+              <p className="text-sm text-stone-400">No enhanced notes yet.</p>
+            ))}
         </main>
         {showTranscript && (
           <aside className="w-80 shrink-0 border-l border-stone-200 bg-stone-100/60">

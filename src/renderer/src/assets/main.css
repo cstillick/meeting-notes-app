@@ -23,3 +23,23 @@
 ::selection {
   background: rgb(217 119 6 / 0.25);
 }
+
+/* Enhanced notes: AI-added text gray, the user's own words black (Granola style) */
+.enhanced-doc {
+  color: var(--color-stone-500);
+}
+.enhanced-doc h1,
+.enhanced-doc h2,
+.enhanced-doc h3,
+.enhanced-doc strong {
+  color: var(--color-stone-600);
+}
+.enhanced-doc [data-user-text] {
+  color: var(--color-stone-900);
+}
+.enhanced-doc [data-user-text] strong,
+.enhanced-doc h1 [data-user-text],
+.enhanced-doc h2 [data-user-text],
+.enhanced-doc h3 [data-user-text] {
+  color: var(--color-stone-950);
+}

@@ -1,0 +1,24 @@
+appId: com.cooperstillick.granola-clone
+productName: Granola Clone
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**
+extraResources:
+  - from: resources/bin
+    to: bin
+mac:
+  target:
+    - target: dir
+      arch: arm64
+  category: public.app-category.productivity
+  # Ad-hoc signing for local use; replace with a Developer ID for distribution
+  identity: null
+  extendInfo:
+    NSMicrophoneUsageDescription: >-
+      Granola Clone uses the microphone to transcribe your side of meetings.
+    NSAudioCaptureUsageDescription: >-
+      Granola Clone records system audio to transcribe what other meeting
+      participants say.
+npmRebuild: false

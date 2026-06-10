@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
-import { registerIpc } from './ipc'
+import { registerIpc, stopMicMonitor } from './ipc'
 import { recorder } from './transcription/recorder'
 import { closeDb } from './db/database'
 
@@ -60,5 +60,6 @@ app.on('window-all-closed', () => {
 // Never orphan the audio helpers: a stale tap leaves the orange mic indicator on.
 app.on('before-quit', () => {
   void recorder.stop()
+  stopMicMonitor()
   closeDb()
 })

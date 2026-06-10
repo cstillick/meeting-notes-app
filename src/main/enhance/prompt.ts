@@ -1,0 +1,98 @@
+import type { TranscriptSegment } from '@shared/types'
+
+// Static system prompt (stable prefix — cacheable).
+export const SYSTEM_PROMPT = `You are a meeting-notes editor. You will receive a meeting transcript with two speakers — "Me" (the note-taker) and "Them" (the other participants) — plus the rough notes the note-taker typed during the meeting.
+
+Produce enhanced meeting notes in Markdown:
+- Line 1: a short, descriptive meeting title as an H1 heading.
+- Use the note-taker's rough notes as the backbone: keep their structure, order, and intent. Expand each of their points with relevant context, decisions, numbers, and names from the transcript.
+- Preserve the note-taker's own wording wherever possible, fixing only obvious typos. Wrap every span of text that comes from the note-taker's own notes (verbatim or lightly typo-corrected) in the markers ⟦U⟧ … ⟦/U⟧. Text you add from the transcript gets no markers.
+- Add sections the notes imply but don't cover (for example "Action items" or "Decisions") only when the transcript supports them.
+- Never invent facts that are not in the transcript or the notes. If the transcript is too sparse to expand a point, keep the point as written.
+- If the rough notes are empty, summarize the meeting from the transcript alone (no ⟦U⟧ markers in that case).
+- Structure with headings and bullet points. Be concise — this is a reference document, not prose.`
+
+/** Extract readable plain text (with rough list structure) from ProseMirror JSON. */
+export function pmToPlainText(notesJson: string): string {
+  try {
+    const lines: string[] = []
+    const walkBlock = (node: unknown, depth: number): void => {
+      if (!node || typeof node !== 'object') return
+      const n = node as { type?: string; text?: string; content?: unknown[] }
+      if (n.type === 'paragraph' || n.type === 'heading') {
+        const text = collectText(n)
+        if (text.trim()) lines.push(`${'  '.repeat(depth)}${text}`)
+        return
+      }
+      if (n.type === 'listItem' || n.type === 'taskItem') {
+        const text = collectText(n)
+        if (text.trim()) lines.push(`${'  '.repeat(depth)}- ${text}`)
+        return
+      }
+      if (Array.isArray(n.content)) {
+        const nextDepth = n.type === 'bulletList' || n.type === 'orderedList' ? depth + 1 : depth
+        n.content.forEach((c) => walkBlock(c, nextDepth))
+      }
+    }
+    const collectText = (node: unknown): string => {
+      const parts: string[] = []
+      const walk = (x: unknown): void => {
+        if (!x || typeof x !== 'object') return
+        const xn = x as { text?: string; content?: unknown[] }
+        if (typeof xn.text === 'string') parts.push(xn.text)
+        if (Array.isArray(xn.content)) xn.content.forEach(walk)
+      }
+      walk(node)
+      return parts.join('')
+    }
+    walkBlock(JSON.parse(notesJson), 0)
+    return lines.join('\n')
+  } catch {
+    return ''
+  }
+}
+
+function formatTimestamp(ms: number): string {
+  const totalSec = Math.floor(ms / 1000)
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+export function buildUserMessage(args: {
+  title: string
+  startedAt: number | null
+  notesJson: string
+  segments: TranscriptSegment[]
+}): string {
+  const when = args.startedAt
+    ? new Date(args.startedAt).toLocaleString(undefined, {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit'
+      })
+    : 'unknown time'
+
+  const roughNotes = pmToPlainText(args.notesJson) || '(no notes typed)'
+
+  const transcript =
+    args.segments
+      .map(
+        (s) =>
+          `[${formatTimestamp(s.startMs)}] [${s.channel === 'mic' ? 'Me' : 'Them'}] ${s.text}`
+      )
+      .join('\n') || '(no transcript)'
+
+  return `Meeting: ${args.title || 'Untitled meeting'}
+When: ${when}
+
+<rough_notes>
+${roughNotes}
+</rough_notes>
+
+<transcript>
+${transcript}
+</transcript>`
+}

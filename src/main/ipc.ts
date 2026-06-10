@@ -2,6 +2,14 @@ import { BrowserWindow, ipcMain } from 'electron'
 import type { EventMap, InvokeMap } from '@shared/ipc'
 import { getSettingsView, updateSettings } from './settings'
 import { recorder } from './transcription/recorder'
+import { enhancer } from './enhance/enhancer'
+import { MicMonitor } from './audio/micMonitor'
+
+let micMonitor: MicMonitor | null = null
+
+export function stopMicMonitor(): void {
+  micMonitor?.stop()
+}
 import {
   createMeeting,
   deleteMeeting,
@@ -66,10 +74,37 @@ export function registerIpc(): void {
   ipcMain.handle('recorder:start', (_e, meetingId: string) => recorder.start(meetingId))
   ipcMain.handle('recorder:stop', () => recorder.stop())
 
+  handle('enhance:start', (meetingId) => enhancer.start(meetingId))
+  handle('enhance:cancel', () => enhancer.cancel())
+
+  enhancer.on('delta', (d) => broadcast('enhance:delta', d))
+  enhancer.on('done', (d) => broadcast('enhance:done', d))
+  enhancer.on('error', (d) => broadcast('enhance:error', d))
+
   ipcMain.on('mic:pcm', (_e, chunk: ArrayBuffer) => {
     recorder.onMicChunk(Buffer.from(chunk))
   })
 
   recorder.on('segment', (segment) => broadcast('transcript:segment', segment))
   recorder.on('status', (status) => broadcast('recorder:status', status))
+
+  // Meeting detection: when another app starts using the mic and we're not
+  // recording, suggest taking notes. Debounce 3s to skip short blips, and
+  // suppress while our own capture holds the mic open.
+  micMonitor = new MicMonitor()
+  let debounce: NodeJS.Timeout | null = null
+  micMonitor.on('activity', (inUse) => {
+    if (debounce) {
+      clearTimeout(debounce)
+      debounce = null
+    }
+    if (inUse) {
+      debounce = setTimeout(() => {
+        if (!recorder.recording) broadcast('mic:activity', { inUse: true })
+      }, 3000)
+    } else {
+      broadcast('mic:activity', { inUse: false })
+    }
+  })
+  micMonitor.start()
 }
