@@ -1,6 +1,8 @@
 import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { registerIpc } from './ipc'
+import { recorder } from './transcription/recorder'
+import { closeDb } from './db/database'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -53,4 +55,10 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Never orphan the audio helpers: a stale tap leaves the orange mic indicator on.
+app.on('before-quit', () => {
+  void recorder.stop()
+  closeDb()
 })

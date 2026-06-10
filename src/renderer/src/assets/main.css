@@ -1,4 +1,14 @@
 @import 'tailwindcss';
+@plugin '@tailwindcss/typography';
+
+/* TipTap placeholder (Placeholder extension adds .is-empty + data-placeholder) */
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--color-stone-300);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
 
 /* macOS hiddenInset titlebar: make the top strip draggable */
 .drag-region {

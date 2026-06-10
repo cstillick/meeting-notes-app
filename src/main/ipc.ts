@@ -1,6 +1,7 @@
-import { ipcMain } from 'electron'
-import type { InvokeMap } from '@shared/ipc'
+import { BrowserWindow, ipcMain } from 'electron'
+import type { EventMap, InvokeMap } from '@shared/ipc'
 import { getSettingsView, updateSettings } from './settings'
+import { recorder } from './transcription/recorder'
 import {
   createMeeting,
   deleteMeeting,
@@ -21,6 +22,16 @@ export function handle<K extends keyof InvokeMap>(
   ipcMain.handle(channel, (_event, ...args) =>
     handler(...(args as Parameters<InvokeMap[K]>))
   )
+}
+
+/** Broadcast a typed event to all renderer windows. */
+export function broadcast<K extends keyof EventMap>(
+  channel: K,
+  ...args: Parameters<EventMap[K]>
+): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(channel, ...args)
+  }
 }
 
 export function registerIpc(): void {
@@ -51,4 +62,14 @@ export function registerIpc(): void {
   })
 
   handle('search:query', (q) => searchMeetings(q))
+
+  ipcMain.handle('recorder:start', (_e, meetingId: string) => recorder.start(meetingId))
+  ipcMain.handle('recorder:stop', () => recorder.stop())
+
+  ipcMain.on('mic:pcm', (_e, chunk: ArrayBuffer) => {
+    recorder.onMicChunk(Buffer.from(chunk))
+  })
+
+  recorder.on('segment', (segment) => broadcast('transcript:segment', segment))
+  recorder.on('status', (status) => broadcast('recorder:status', status))
 }
