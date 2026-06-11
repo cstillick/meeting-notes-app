@@ -43,3 +43,20 @@
 .enhanced-doc h3 [data-user-text] {
   color: var(--color-stone-950);
 }
+
+/* Cascade outline + chat answers: visible markers per nesting depth
+   (the typography plugin defaults every level to disc) */
+.enhanced-doc ul ul,
+.chat-md ul ul {
+  list-style-type: circle;
+  margin-top: 0.125rem;
+  margin-bottom: 0.125rem;
+}
+.enhanced-doc ul ul ul,
+.chat-md ul ul ul {
+  list-style-type: square;
+}
+.chat-md blockquote {
+  margin-top: 0.375rem;
+  margin-bottom: 0.375rem;
+}

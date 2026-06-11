@@ -21,7 +21,9 @@ import {
   updateTitle
 } from './db/meetings'
 import { getSegments } from './db/transcripts'
+import { clearChat, getChatHistory } from './db/chats'
 import { reindexMeeting, searchMeetings } from './db/search'
+import { chatService } from './chat/chatService'
 
 /** Typed ipcMain.handle wrapper tying handlers to the shared contract. */
 export function handle<K extends keyof InvokeMap>(
@@ -102,6 +104,15 @@ export function registerIpc(): void {
   enhancer.on('delta', (d) => broadcast('enhance:delta', d))
   enhancer.on('done', (d) => broadcast('enhance:done', d))
   enhancer.on('error', (d) => broadcast('enhance:error', d))
+
+  handle('chat:send', (req) => chatService.send(req))
+  handle('chat:history', (meetingId) => getChatHistory(meetingId))
+  handle('chat:cancel', (chatKey) => chatService.cancel(chatKey))
+  handle('chat:clear', (meetingId) => clearChat(meetingId))
+
+  chatService.on('delta', (d) => broadcast('chat:delta', d))
+  chatService.on('done', (d) => broadcast('chat:done', d))
+  chatService.on('error', (d) => broadcast('chat:error', d))
 
   ipcMain.on('mic:pcm', (_e, chunk: ArrayBuffer) => {
     recorder.onMicChunk(Buffer.from(chunk))

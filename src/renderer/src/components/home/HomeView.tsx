@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import type { MeetingSummary } from '@shared/types'
+import ChatDock from '../chat/ChatDock'
 
 function formatDuration(startedAt: number | null, endedAt: number | null): string | null {
   if (!startedAt || !endedAt) return null
@@ -67,7 +68,7 @@ export default function HomeView(): React.JSX.Element {
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-6 py-6">
+      <main className="flex-1 overflow-y-auto px-6 pt-6 pb-24">
         <div className="mx-auto max-w-2xl">
           <input
             type="search"
@@ -135,6 +136,7 @@ export default function HomeView(): React.JSX.Element {
           </ul>
         </div>
       </main>
+      <ChatDock meetingId={null} />
     </div>
   )
 }

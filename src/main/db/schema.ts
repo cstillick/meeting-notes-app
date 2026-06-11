@@ -57,5 +57,17 @@ export const MIGRATIONS: string[] = [
   DROP INDEX IF EXISTS idx_segments_unique;
   CREATE UNIQUE INDEX idx_segments_unique
     ON transcript_segments(meeting_id, channel, start_ms, end_ms, text, COALESCE(speaker, -1));
+  `,
+  // v3: persisted AI chat threads. meeting_id NULL = the one global
+  // (cross-meeting) thread asked from the home view.
+  `
+  CREATE TABLE chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id TEXT REFERENCES meetings(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL CHECK (role IN ('user','assistant')),
+    content    TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_chat_meeting ON chat_messages(meeting_id, id);
   `
 ]

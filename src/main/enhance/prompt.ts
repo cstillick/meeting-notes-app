@@ -1,4 +1,11 @@
-import type { TranscriptSegment } from '@shared/types'
+// Minimal structural shape shared by TranscriptSegment (speaker: number | null)
+// and ChatLiveFinal (speaker?: number) so chat can format either source.
+export interface TranscriptLine {
+  channel: 'mic' | 'system'
+  text: string
+  startMs: number
+  speaker?: number | null
+}
 
 // Static system prompt (stable prefix — cacheable).
 export const SYSTEM_PROMPT = `You are a meeting-notes editor. You will receive a meeting transcript with labeled speakers — "Me" (the note-taker) and one or more other participants labeled "Speaker 1", "Speaker 2", … (or "Them" when the voice could not be distinguished) — plus the rough notes the note-taker typed during the meeting. Speaker numbers identify distinct voices, not names; if the transcript reveals a speaker's name, you may use it when attributing statements.
@@ -10,7 +17,8 @@ Produce enhanced meeting notes in Markdown:
 - Add sections the notes imply but don't cover (for example "Action items" or "Decisions") only when the transcript supports them.
 - Never invent facts that are not in the transcript or the notes. If the transcript is too sparse to expand a point, keep the point as written.
 - If the rough notes are empty, summarize the meeting from the transcript alone (no ⟦U⟧ markers in that case).
-- Structure with headings and bullet points. Be concise — this is a reference document, not prose.`
+- Structure with headings and bullet points. Be concise — this is a reference document, not prose.
+- End the document with a final section "## Meeting outline": a nested bullet outline of the entire meeting in chronological order. Top-level bullets are the major topics; second-level bullets are subtopics, decisions, and questions within each topic; third-level bullets are supporting details (names, numbers, short quotes). Indent each nesting level by exactly 2 spaces. Use 3 levels (a 4th only when genuinely needed). Cover the whole meeting, including parts the rough notes skip. Keep each bullet under ~12 words. Do not use ⟦U⟧ markers in this section — it is built from the transcript.`
 
 /** Extract readable plain text (with rough list structure) from ProseMirror JSON. */
 export function pmToPlainText(notesJson: string): string {
@@ -52,23 +60,30 @@ export function pmToPlainText(notesJson: string): string {
   }
 }
 
-function speakerLabel(s: TranscriptSegment): string {
+export function speakerLabel(s: TranscriptLine): string {
   if (s.channel === 'mic') return 'Me'
   return s.speaker == null ? 'Them' : `Speaker ${s.speaker + 1}`
 }
 
-function formatTimestamp(ms: number): string {
+export function formatTimestamp(ms: number): string {
   const totalSec = Math.floor(ms / 1000)
   const m = Math.floor(totalSec / 60)
   const s = totalSec % 60
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
+/** "[m:ss] [Speaker] text" lines — the transcript format every prompt uses. */
+export function formatTranscript(lines: TranscriptLine[]): string {
+  return lines
+    .map((s) => `[${formatTimestamp(s.startMs)}] [${speakerLabel(s)}] ${s.text}`)
+    .join('\n')
+}
+
 export function buildUserMessage(args: {
   title: string
   startedAt: number | null
   notesJson: string
-  segments: TranscriptSegment[]
+  segments: TranscriptLine[]
 }): string {
   const when = args.startedAt
     ? new Date(args.startedAt).toLocaleString(undefined, {
@@ -82,10 +97,7 @@ export function buildUserMessage(args: {
 
   const roughNotes = pmToPlainText(args.notesJson) || '(no notes typed)'
 
-  const transcript =
-    args.segments
-      .map((s) => `[${formatTimestamp(s.startMs)}] [${speakerLabel(s)}] ${s.text}`)
-      .join('\n') || '(no transcript)'
+  const transcript = formatTranscript(args.segments) || '(no transcript)'
 
   return `Meeting: ${args.title || 'Untitled meeting'}
 When: ${when}

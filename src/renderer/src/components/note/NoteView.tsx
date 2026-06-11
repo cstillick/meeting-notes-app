@@ -6,6 +6,7 @@ import { useEnhanceStore } from '../../stores/enhanceStore'
 import NoteEditor from './NoteEditor'
 import TranscriptPanel from './TranscriptPanel'
 import { EnhancedDoc, StreamingPreview } from './EnhancedView'
+import ChatDock from '../chat/ChatDock'
 
 function RecordButton({ meetingId }: { meetingId: string }): React.JSX.Element {
   const { recorderState, recordingMeetingId, micLevel, lastError, startRecording, stopRecording } =
@@ -188,7 +189,7 @@ export default function NoteView(): React.JSX.Element {
       )}
 
       <div className="flex min-h-0 flex-1">
-        <main className="min-w-0 flex-1 overflow-y-auto px-8 py-6">
+        <main className="min-w-0 flex-1 overflow-y-auto px-8 pt-6 pb-24">
           {(meeting?.enhancedJson || isStreamingThis) && (
             <div className="mb-4 flex gap-1 border-b border-stone-200">
               {(['notes', 'enhanced'] as const).map((t) => (
@@ -234,6 +235,7 @@ export default function NoteView(): React.JSX.Element {
           </aside>
         )}
       </div>
+      <ChatDock meetingId={id} />
     </div>
   )
 }

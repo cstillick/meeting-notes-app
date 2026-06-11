@@ -69,3 +69,27 @@ export interface SettingsUpdate {
 }
 
 export const DEFAULT_MODEL = 'claude-opus-4-8'
+
+/** One persisted chat turn. meetingId null = the global (cross-meeting) thread. */
+export interface ChatMessage {
+  id: number
+  meetingId: string | null
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: number
+}
+
+/** Final transcript bubble passed from the renderer with a live-meeting chat
+ *  question — fresher than the DB, which holds mic finals ~3.5s for echo checks. */
+export interface ChatLiveFinal {
+  channel: Channel
+  text: string
+  startMs: number
+  speaker?: number
+}
+
+export interface ChatSendRequest {
+  meetingId: string | null
+  question: string
+  liveFinals?: ChatLiveFinal[]
+}

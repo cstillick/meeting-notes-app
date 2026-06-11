@@ -59,6 +59,39 @@ export function reindexMeeting(meetingId: string): void {
   }
 }
 
+// Filler words a natural-language question carries that would drown an FTS
+// match in noise (every meeting contains "what", "the", "did"…).
+const CHAT_STOPWORDS = new Set([
+  'the', 'and', 'for', 'are', 'was', 'were', 'did', 'does', 'what', 'when',
+  'who', 'how', 'why', 'where', 'which', 'about', 'with', 'that', 'this',
+  'have', 'has', 'had', 'our', 'you', 'your', 'they', 'their', 'them', 'she',
+  'his', 'her', 'him', 'can', 'could', 'would', 'should', 'will', 'any',
+  'all', 'say', 'said', 'tell', 'told', 'get', 'got', 'meeting', 'meetings'
+])
+
+/** Rank meetings relevant to a chat question. Unlike searchMeetings (terms
+ *  ANDed — right for keyword search, wrong for questions), this ORs the
+ *  meaningful terms and ranks by bm25, so "what did we decide about the
+ *  redesign budget" still matches a meeting that only mentions "redesign". */
+export function searchMeetingIdsForChat(question: string, limit = 6): string[] {
+  try {
+    const terms = question
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((t) => t.length >= 3 && !CHAT_STOPWORDS.has(t.toLowerCase()))
+    if (terms.length === 0) return []
+    const ftsQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"*`).join(' OR ')
+    const rows = getDb()
+      .prepare(
+        'SELECT meeting_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts) LIMIT ?'
+      )
+      .all(ftsQuery, limit) as unknown as { meeting_id: string }[]
+    return rows.map((r) => r.meeting_id)
+  } catch (err) {
+    console.error('search: chat FTS query failed', err)
+    return []
+  }
+}
+
 export function searchMeetings(query: string): MeetingSummary[] {
   const q = query.trim()
   if (!q) return listMeetings()

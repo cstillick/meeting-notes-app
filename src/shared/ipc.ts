@@ -1,4 +1,6 @@
 import type {
+  ChatMessage,
+  ChatSendRequest,
   LiveSegment,
   Meeting,
   MeetingSummary,
@@ -35,6 +37,11 @@ export interface InvokeMap {
   'detect:consumePending': () => boolean
   'settings:get': () => SettingsView
   'settings:set': (update: SettingsUpdate) => SettingsView
+  /** Ask the floating chat. meetingId null = global (cross-meeting) thread. */
+  'chat:send': (req: ChatSendRequest) => { ok: boolean; error?: string }
+  'chat:history': (meetingId: string | null) => ChatMessage[]
+  'chat:cancel': (chatKey: string) => void
+  'chat:clear': (meetingId: string | null) => void
 }
 
 /** Renderer → main fire-and-forget (ipcRenderer.send). High-frequency channels. */
@@ -53,6 +60,10 @@ export interface EventMap {
   'enhance:delta': (delta: { meetingId: string; text: string }) => void
   'enhance:done': (result: { meetingId: string; markdown: string }) => void
   'enhance:error': (err: { meetingId: string; message: string }) => void
+  /** chatKey = meetingId, or 'global' for the cross-meeting thread. */
+  'chat:delta': (delta: { chatKey: string; text: string }) => void
+  'chat:done': (result: { chatKey: string; markdown: string; message: ChatMessage }) => void
+  'chat:error': (err: { chatKey: string; message: string }) => void
 }
 
 export type InvokeChannel = keyof InvokeMap
