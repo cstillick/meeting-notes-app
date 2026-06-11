@@ -7,9 +7,11 @@
   "private": true,
   "scripts": {
     "dev": "electron-vite dev --watch",
-    "build": "electron-vite build && electron-builder",
+    "build": "electron-vite build && electron-builder && node scripts/verify-package.mjs",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "stress": "node scripts/stress/run-all.mjs",
+    "check": "npm run typecheck && npm run stress",
     "fix-electron-plist": "node scripts/fix-electron-plist.mjs"
   },
   "dependencies": {

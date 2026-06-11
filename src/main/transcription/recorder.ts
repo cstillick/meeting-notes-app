@@ -12,12 +12,14 @@ import { reindexMeeting } from '../db/search'
 import { DeepgramSession } from './deepgramSession'
 import { MockDeepgramSession } from './mockSession'
 import { EchoSuppressor } from './echoSuppressor'
+import { buildStamp, echoLog } from './debugLog'
 
 // MOCK_DEEPGRAM=1: synthetic transcription, no network. Test scaffolding only.
 const USE_MOCK = process.env['MOCK_DEEPGRAM'] === '1'
-// ECHO_DEBUG=1: log every mic-final echo decision with the suppressor's
-// internals (coverage, window union, nearest system-entry delta) so leaks can
-// be diagnosed from a recording instead of inferred after the fact.
+// Every mic-final echo decision is logged with the suppressor's internals
+// (coverage, window union, nearest system-entry delta, confidence) to
+// userData/echo-debug.log, so leaks are diagnosed from measurements instead
+// of inferred after the fact. ECHO_DEBUG=1 additionally mirrors to stdout.
 const ECHO_DEBUG = process.env['ECHO_DEBUG'] === '1'
 
 type Session = DeepgramSession | MockDeepgramSession
@@ -134,6 +136,7 @@ export class Recorder extends EventEmitter<{
       this.startedAt = Date.now()
       setStarted(meetingId, this.startedAt)
       this.setState('recording')
+      echoLog(`start meeting=${meetingId} build=${buildStamp()}`)
       return { ok: true }
     } catch (err) {
       this.audiotee?.stop()
@@ -232,7 +235,7 @@ export class Recorder extends EventEmitter<{
     this.emit('segment', { channel, text, startMs, endMs, isFinal: true, speaker })
   }
 
-  /** isEcho with optional decision logging (ECHO_DEBUG=1). */
+  /** isEcho, with the decision logged to echo-debug.log (and stdout under ECHO_DEBUG=1). */
   private checkEcho(
     stage: string,
     text: string,
@@ -240,15 +243,15 @@ export class Recorder extends EventEmitter<{
     endMs: number,
     confidence?: number
   ): boolean {
-    if (!ECHO_DEBUG) return this.suppressor.isEcho(text, startMs, endMs)
     const v = this.suppressor.evaluate(text, startMs, endMs)
     const delta = v.nearestStartDeltaMs === null ? 'none' : `${Math.round(v.nearestStartDeltaMs)}ms`
-    console.log(
-      `[echo] ${stage} [${Math.round(startMs)}-${Math.round(endMs)}] ` +
-        `echo=${v.isEcho} coverage=${v.coverage.toFixed(2)} tokens=${v.micTokenCount} ` +
-        `union=${v.unionSize} entries=${v.entryCount} nearestSysDelta=${delta} ` +
-        `conf=${confidence === undefined ? 'n/a' : confidence.toFixed(2)} "${text}"`
-    )
+    const line =
+      `${stage} [${Math.round(startMs)}-${Math.round(endMs)}] ` +
+      `echo=${v.isEcho} coverage=${v.coverage.toFixed(2)} tokens=${v.micTokenCount} ` +
+      `union=${v.unionSize} entries=${v.entryCount} nearestSysDelta=${delta} ` +
+      `conf=${confidence === undefined ? 'n/a' : confidence.toFixed(2)} "${text}"`
+    echoLog(line)
+    if (ECHO_DEBUG) console.log(`[echo] ${line}`)
     return v.isEcho
   }
 
@@ -273,7 +276,12 @@ export class Recorder extends EventEmitter<{
   /** Drop held mic finals that a newly arrived system result revealed as echo. */
   private retractMatchedPending(): void {
     for (const pending of [...this.pendingMicFinals]) {
+      // Runs on every system result, so only the (rare) retractions are
+      // logged — the per-final decision points log every verdict.
       if (this.suppressor.isEcho(pending.text, pending.startMs, pending.endMs)) {
+        echoLog(
+          `mic retract [${Math.round(pending.startMs)}-${Math.round(pending.endMs)}] "${pending.text}"`
+        )
         const idx = this.pendingMicFinals.indexOf(pending)
         if (idx !== -1) this.pendingMicFinals.splice(idx, 1)
         clearTimeout(pending.timer)

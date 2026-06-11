@@ -62,6 +62,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  console.log(`Granola Clone build: ${__BUILD_INFO__.commit} @ ${__BUILD_INFO__.time}`)
   registerIpc()
   createWindow()
 
