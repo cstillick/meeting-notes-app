@@ -34,8 +34,9 @@ export class Enhancer extends EventEmitter<{
 
     this.activeMeetingId = meetingId
     this.abort = new AbortController()
+    const previousStatus = meeting.status
     updateStatus(meetingId, 'enhancing')
-    void this.run(apiKey, meetingId, meeting, segments)
+    void this.run(apiKey, meetingId, meeting, segments, previousStatus)
     return { ok: true }
   }
 
@@ -43,7 +44,8 @@ export class Enhancer extends EventEmitter<{
     apiKey: string,
     meetingId: string,
     meeting: NonNullable<ReturnType<typeof getMeeting>>,
-    segments: ReturnType<typeof getSegments>
+    segments: ReturnType<typeof getSegments>,
+    previousStatus: NonNullable<ReturnType<typeof getMeeting>>['status']
   ): Promise<void> {
     try {
       const client = new Anthropic({ apiKey })
@@ -88,7 +90,9 @@ export class Enhancer extends EventEmitter<{
             : err instanceof Error
               ? err.message
               : String(err)
-      updateStatus(meetingId, 'recorded')
+      // Restore what the meeting was before (a failed re-enhance must not
+      // downgrade an already-enhanced meeting to 'recorded').
+      updateStatus(meetingId, previousStatus === 'enhancing' ? 'recorded' : previousStatus)
       this.emit('error', { meetingId, message })
     } finally {
       this.activeMeetingId = null

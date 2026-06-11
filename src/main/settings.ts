@@ -70,10 +70,12 @@ export function getSettingsView(): SettingsView {
 export function updateSettings(update: SettingsUpdate): SettingsView {
   const s = { ...load() }
   if (update.deepgramKey !== undefined) {
-    s.deepgramKeyEnc = update.deepgramKey ? encrypt(update.deepgramKey) : null
+    const key = update.deepgramKey?.trim()
+    s.deepgramKeyEnc = key ? encrypt(key) : null
   }
   if (update.anthropicKey !== undefined) {
-    s.anthropicKeyEnc = update.anthropicKey ? encrypt(update.anthropicKey) : null
+    const key = update.anthropicKey?.trim()
+    s.anthropicKeyEnc = key ? encrypt(key) : null
   }
   if (update.model !== undefined && update.model.trim()) {
     s.model = update.model.trim()
@@ -82,13 +84,14 @@ export function updateSettings(update: SettingsUpdate): SettingsView {
   return getSettingsView()
 }
 
-/** Main-process-only accessors for the actual key material. */
+/** Main-process-only accessors for the actual key material.
+ *  Trim defensively: keys saved before trim-on-save may carry pasted whitespace. */
 export function getDeepgramKey(): string | null {
-  return decrypt(load().deepgramKeyEnc)
+  return decrypt(load().deepgramKeyEnc)?.trim() || null
 }
 
 export function getAnthropicKey(): string | null {
-  return decrypt(load().anthropicKeyEnc)
+  return decrypt(load().anthropicKeyEnc)?.trim() || null
 }
 
 export function getModel(): string {

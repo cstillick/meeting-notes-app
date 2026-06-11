@@ -2,19 +2,24 @@ import type { MeetingSummary } from '@shared/types'
 import { getDb } from './database'
 import { listMeetings } from './meetings'
 
-/** Extract plain text from ProseMirror JSON (best-effort, for indexing). */
+/** Extract plain text from ProseMirror JSON (best-effort, for indexing).
+ *  Iterative walk: notes_json depth is untrusted, recursion would overflow. */
 function pmToText(json: string): string {
   try {
     const parts: string[] = []
-    const walk = (node: unknown): void => {
-      if (!node || typeof node !== 'object') return
+    const stack: unknown[] = [JSON.parse(json)]
+    while (stack.length > 0) {
+      const node = stack.pop()
+      if (!node || typeof node !== 'object') continue
       const n = node as { text?: string; content?: unknown[] }
       if (typeof n.text === 'string') parts.push(n.text)
-      if (Array.isArray(n.content)) n.content.forEach(walk)
+      if (Array.isArray(n.content)) {
+        for (let i = n.content.length - 1; i >= 0; i--) stack.push(n.content[i])
+      }
     }
-    walk(JSON.parse(json))
     return parts.join(' ')
-  } catch {
+  } catch (err) {
+    console.error('search: failed to extract text from notes_json', err)
     return ''
   }
 }
@@ -37,12 +42,21 @@ export function reindexMeeting(meetingId: string): void {
 
   const body = [pmToText(meeting.notes_json), meeting.enhanced_md ?? '', transcript].join(' ')
 
-  db.prepare('DELETE FROM search_fts WHERE meeting_id = ?').run(meetingId)
-  db.prepare('INSERT INTO search_fts (meeting_id, title, body) VALUES (?, ?, ?)').run(
-    meetingId,
-    meeting.title,
-    body
-  )
+  // SAVEPOINT (not BEGIN): callers may already hold a transaction.
+  db.exec('SAVEPOINT reindex')
+  try {
+    db.prepare('DELETE FROM search_fts WHERE meeting_id = ?').run(meetingId)
+    db.prepare('INSERT INTO search_fts (meeting_id, title, body) VALUES (?, ?, ?)').run(
+      meetingId,
+      meeting.title,
+      body
+    )
+    db.exec('RELEASE reindex')
+  } catch (err) {
+    db.exec('ROLLBACK TO reindex')
+    db.exec('RELEASE reindex')
+    throw err
+  }
 }
 
 export function searchMeetings(query: string): MeetingSummary[] {
@@ -52,24 +66,48 @@ export function searchMeetings(query: string): MeetingSummary[] {
   const db = getDb()
   let ids: string[]
   try {
-    // Quote each term to keep FTS5 syntax characters from breaking the query
+    // Quote each term to keep FTS5 syntax characters from breaking the query.
+    // Control chars (incl. NUL) would truncate the query inside SQLite — strip them.
     const ftsQuery = q
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
       .split(/\s+/)
+      .filter((t) => t.length > 0)
       .map((t) => `"${t.replace(/"/g, '""')}"*`)
       .join(' ')
+    if (!ftsQuery) return []
     ids = (
       db
         .prepare('SELECT meeting_id FROM search_fts WHERE search_fts MATCH ? LIMIT 100')
         .all(ftsQuery) as { meeting_id: string }[]
     ).map((r) => r.meeting_id)
-  } catch {
+  } catch (err) {
+    console.error('search: FTS query failed', err)
     ids = []
   }
   if (ids.length === 0) return []
 
-  const all = listMeetings()
-  const rank = new Map(ids.map((id, i) => [id, i]))
-  return all
-    .filter((m) => rank.has(m.id))
-    .sort((a, b) => rank.get(a.id)! - rank.get(b.id)!)
+  // Fetch only the matched meetings (not the whole table), newest first.
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = db
+    .prepare(
+      `SELECT id, title, created_at, started_at, ended_at, status
+         FROM meetings WHERE id IN (${placeholders})
+        ORDER BY created_at DESC`
+    )
+    .all(...ids) as {
+    id: string
+    title: string
+    created_at: number
+    started_at: number | null
+    ended_at: number | null
+    status: MeetingSummary['status']
+  }[]
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    createdAt: r.created_at,
+    startedAt: r.started_at,
+    endedAt: r.ended_at,
+    status: r.status
+  }))
 }

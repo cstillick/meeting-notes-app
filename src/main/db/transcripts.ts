@@ -8,6 +8,7 @@ interface SegmentRow {
   text: string
   start_ms: number
   end_ms: number
+  speaker: number | null
 }
 
 export function insertSegment(
@@ -15,13 +16,16 @@ export function insertSegment(
   channel: Channel,
   text: string,
   startMs: number,
-  endMs: number
+  endMs: number,
+  speaker: number | null = null
 ): void {
+  // OR IGNORE: Deepgram retransmits finals after reconnects; the unique index
+  // (idx_segments_unique) makes replays a no-op instead of a duplicate row.
   getDb()
     .prepare(
-      'INSERT INTO transcript_segments (meeting_id, channel, text, start_ms, end_ms) VALUES (?, ?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO transcript_segments (meeting_id, channel, text, start_ms, end_ms, speaker) VALUES (?, ?, ?, ?, ?, ?)'
     )
-    .run(meetingId, channel, text, startMs, endMs)
+    .run(meetingId, channel, text, startMs, endMs, speaker)
 }
 
 export function getSegments(meetingId: string): TranscriptSegment[] {
@@ -34,6 +38,7 @@ export function getSegments(meetingId: string): TranscriptSegment[] {
     channel: r.channel,
     text: r.text,
     startMs: r.start_ms,
-    endMs: r.end_ms
+    endMs: r.end_ms,
+    speaker: r.speaker
   }))
 }

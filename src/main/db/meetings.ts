@@ -107,6 +107,13 @@ export function saveEnhanced(
 
 export function deleteMeeting(id: string): void {
   const db = getDb()
-  db.prepare('DELETE FROM meetings WHERE id = ?').run(id)
-  db.prepare('DELETE FROM search_fts WHERE meeting_id = ?').run(id)
+  db.exec('BEGIN')
+  try {
+    db.prepare('DELETE FROM meetings WHERE id = ?').run(id)
+    db.prepare('DELETE FROM search_fts WHERE meeting_id = ?').run(id)
+    db.exec('COMMIT')
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
 }

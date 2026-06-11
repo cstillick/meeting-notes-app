@@ -15,6 +15,12 @@ export class MicMonitor extends EventEmitter<{ activity: [boolean] }> {
     const child = spawn(helperPath('micmonitor'), [], { stdio: ['ignore', 'pipe', 'ignore'] })
     this.child = child
 
+    // Without this, a spawn failure (missing/unsigned binary) raises an
+    // unhandled 'error' event and takes down the whole main process.
+    child.on('error', (err) => {
+      console.error('[detect] micmonitor failed to start:', err.message)
+    })
+
     let pending = ''
     child.stdout.on('data', (buf: Buffer) => {
       pending += buf.toString()
@@ -30,9 +36,10 @@ export class MicMonitor extends EventEmitter<{ activity: [boolean] }> {
       }
     })
 
-    child.on('exit', () => {
+    child.on('exit', (code) => {
       this.child = null
       if (!this.stopping) {
+        console.warn(`[detect] micmonitor exited (code ${code}), restarting`)
         setTimeout(() => !this.stopping && this.start(), 1000)
       }
     })

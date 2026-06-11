@@ -1,14 +1,42 @@
 import { useEffect, useRef } from 'react'
 import type { Bubble } from '../../stores/activeMeetingStore'
 
-function BubbleRow({ bubble, isInterim }: { bubble: Bubble; isInterim?: boolean }): React.JSX.Element {
+// Distinct bubble colors per diarized speaker on the system channel; the
+// palette wraps for meetings with more speakers than entries.
+const SPEAKER_PALETTE = [
+  'bg-stone-200 text-stone-800',
+  'bg-sky-100 text-sky-950',
+  'bg-emerald-100 text-emerald-950',
+  'bg-violet-100 text-violet-950'
+]
+
+function speakerLabel(bubble: Bubble): string {
+  if (bubble.channel === 'mic') return 'Me'
+  return bubble.speaker === undefined ? 'Them' : `Speaker ${bubble.speaker + 1}`
+}
+
+function BubbleRow({
+  bubble,
+  isInterim,
+  showLabel
+}: {
+  bubble: Bubble
+  isInterim?: boolean
+  showLabel?: boolean
+}): React.JSX.Element {
   const isMe = bubble.channel === 'mic'
+  const color = isMe
+    ? 'rounded-br-sm bg-amber-100 text-amber-950'
+    : `rounded-bl-sm ${SPEAKER_PALETTE[(bubble.speaker ?? 0) % SPEAKER_PALETTE.length]}`
   return (
-    <div className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+      {showLabel && !isMe && (
+        <span className="mb-0.5 px-1 text-[10px] text-stone-400">{speakerLabel(bubble)}</span>
+      )}
       <div
-        className={`max-w-[85%] rounded-2xl px-3 py-1.5 text-sm leading-snug ${
-          isMe ? 'rounded-br-sm bg-amber-100 text-amber-950' : 'rounded-bl-sm bg-stone-200 text-stone-800'
-        } ${isInterim ? 'italic opacity-60' : ''}`}
+        className={`max-w-[85%] rounded-2xl px-3 py-1.5 text-sm leading-snug ${color} ${
+          isInterim ? 'italic opacity-60' : ''
+        }`}
       >
         {bubble.text}
       </div>
@@ -31,6 +59,16 @@ export default function TranscriptPanel({
 
   const empty = finals.length === 0 && !interim.mic && !interim.system
 
+  // Caption a system bubble only when its speaker differs from the previous
+  // system bubble — avoids a label on every line of one person's run.
+  const showLabelAt = (i: number): boolean => {
+    if (finals[i].channel !== 'system') return false
+    for (let j = i - 1; j >= 0; j--) {
+      if (finals[j].channel === 'system') return finals[j].speaker !== finals[i].speaker
+    }
+    return true
+  }
+
   return (
     <div className="flex h-full flex-col overflow-y-auto px-4 py-3">
       <div className="mb-2 flex items-center justify-between text-xs text-stone-400">
@@ -44,7 +82,7 @@ export default function TranscriptPanel({
       )}
       <div className="space-y-1.5">
         {finals.map((b, i) => (
-          <BubbleRow key={`${b.startMs}-${i}`} bubble={b} />
+          <BubbleRow key={`${b.startMs}-${i}`} bubble={b} showLabel={showLabelAt(i)} />
         ))}
         {interim.system && <BubbleRow bubble={interim.system} isInterim />}
         {interim.mic && <BubbleRow bubble={interim.mic} isInterim />}

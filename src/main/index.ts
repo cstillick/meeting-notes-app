@@ -10,6 +10,23 @@ export function getMainWindow(): BrowserWindow | null {
   return mainWindow
 }
 
+/** Bring the app forward, recreating the window if it was closed. Resolves
+ * once the renderer is loaded, so events sent to it afterwards are received. */
+export async function showMainWindow(): Promise<BrowserWindow> {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    return mainWindow
+  }
+  createWindow()
+  const win = mainWindow!
+  if (win.webContents.isLoading()) {
+    await new Promise<void>((resolve) => win.webContents.once('did-finish-load', resolve))
+  }
+  return win
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1150,
@@ -58,8 +75,21 @@ app.on('window-all-closed', () => {
 })
 
 // Never orphan the audio helpers: a stale tap leaves the orange mic indicator on.
-app.on('before-quit', () => {
-  void recorder.stop()
-  stopMicMonitor()
-  closeDb()
+// recorder.stop() flushes trailing transcript finals to the DB, so quitting must
+// wait for it before closing the DB and exiting.
+let quitting = false
+app.on('before-quit', (event) => {
+  if (quitting) return
+  quitting = true
+  event.preventDefault()
+  void (async () => {
+    try {
+      await recorder.stop()
+    } catch (err) {
+      console.error('quit: recorder.stop failed', err)
+    }
+    stopMicMonitor()
+    closeDb()
+    app.exit(0)
+  })()
 })

@@ -19,8 +19,23 @@ export default function MeetingDetectedBanner(): React.JSX.Element | null {
     })
   }, [])
 
-  // Hide while we're the ones using the mic
-  if (!visible || dismissed || recorderState !== 'idle') return null
+  // System notification clicked: same flow as the banner's Start button.
+  useEffect(() => {
+    return window.api.on('meeting:autoStart', () => {
+      if (useActiveMeetingStore.getState().recorderState !== 'idle') return
+      void takeNotes()
+    })
+  }, [])
+
+  // Panel clicked while the window was closed: the start request is parked in
+  // the main process (events sent before mount are lost) — pick it up now.
+  useEffect(() => {
+    void window.api.invoke('detect:consumePending').then((pending) => {
+      if (pending && useActiveMeetingStore.getState().recorderState === 'idle') {
+        void takeNotes()
+      }
+    })
+  }, [])
 
   async function takeNotes(): Promise<void> {
     setVisible(false)
@@ -28,6 +43,9 @@ export default function MeetingDetectedBanner(): React.JSX.Element | null {
     navigate(`/note/${meeting.id}`)
     await startRecording(meeting.id)
   }
+
+  // Hide while we're the ones using the mic
+  if (!visible || dismissed || recorderState !== 'idle') return null
 
   return (
     <div className="fixed right-4 bottom-4 z-50 flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 shadow-lg">

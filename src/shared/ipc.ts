@@ -27,6 +27,12 @@ export interface InvokeMap {
     title?: string
   ) => void
   'search:query': (q: string) => MeetingSummary[]
+  /** Buttons on the floating "meeting detected" panel. */
+  'detect:action': (action: 'start' | 'dismiss') => void
+  /** True once if a detect-panel start is waiting for a freshly created window.
+   *  The renderer asks on mount; events sent before React attaches listeners
+   *  would otherwise be lost. */
+  'detect:consumePending': () => boolean
   'settings:get': () => SettingsView
   'settings:set': (update: SettingsUpdate) => SettingsView
 }
@@ -42,6 +48,8 @@ export interface EventMap {
   'transcript:segment': (segment: LiveSegment) => void
   'recorder:status': (status: RecorderStatus) => void
   'mic:activity': (activity: { inUse: boolean }) => void
+  /** User clicked the "meeting detected" system notification: create a meeting and record. */
+  'meeting:autoStart': () => void
   'enhance:delta': (delta: { meetingId: string; text: string }) => void
   'enhance:done': (result: { meetingId: string; markdown: string }) => void
   'enhance:error': (err: { meetingId: string; message: string }) => void

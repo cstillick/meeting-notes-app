@@ -8,9 +8,8 @@ import TranscriptPanel from './TranscriptPanel'
 import { EnhancedDoc, StreamingPreview } from './EnhancedView'
 
 function RecordButton({ meetingId }: { meetingId: string }): React.JSX.Element {
-  const { recorderState, recordingMeetingId, micLevel, startRecording, stopRecording } =
+  const { recorderState, recordingMeetingId, micLevel, lastError, startRecording, stopRecording } =
     useActiveMeetingStore()
-  const [error, setError] = useState<string | null>(null)
 
   const isThisMeeting = recordingMeetingId === meetingId
   const recording = isThisMeeting && (recorderState === 'recording' || recorderState === 'starting')
@@ -18,18 +17,20 @@ function RecordButton({ meetingId }: { meetingId: string }): React.JSX.Element {
   const blocked = !isThisMeeting && recordingMeetingId !== null && recorderState !== 'idle'
 
   async function toggle(): Promise<void> {
-    setError(null)
     if (recording) {
       await stopRecording()
     } else {
-      const err = await startRecording(meetingId)
-      if (err) setError(err)
+      await startRecording(meetingId)
     }
   }
 
   return (
     <div className="flex items-center gap-3">
-      {error && <span className="max-w-xs truncate text-xs text-red-600">{error}</span>}
+      {lastError && (
+        <span className="max-w-xs truncate text-xs text-red-600" title={lastError}>
+          {lastError}
+        </span>
+      )}
       {recording && (
         <div className="flex h-4 items-end gap-0.5" title="Mic level">
           {[0.25, 0.5, 0.75, 1].map((t) => (
@@ -91,7 +92,12 @@ export default function NoteView(): React.JSX.Element {
       if (useActiveMeetingStore.getState().recordingMeetingId !== id) {
         clearTranscript()
         loadFinals(
-          result.segments.map((s) => ({ channel: s.channel, text: s.text, startMs: s.startMs }))
+          result.segments.map((s) => ({
+            channel: s.channel,
+            text: s.text,
+            startMs: s.startMs,
+            speaker: s.speaker ?? undefined
+          }))
         )
       }
     })

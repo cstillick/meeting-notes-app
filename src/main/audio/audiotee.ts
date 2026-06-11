@@ -21,10 +21,16 @@ export class AudioTee extends EventEmitter<AudioTeeEvents> {
   private restarts = 0
   private lastChunkAt = 0
   private silenceTimer: NodeJS.Timeout | null = null
+  private nonZeroSeen = false
+  private zeroRunStartedAt = 0
+  private warnedAllZero = false
 
   start(): void {
     this.stopping = false
     this.restarts = 0
+    this.nonZeroSeen = false
+    this.zeroRunStartedAt = 0
+    this.warnedAllZero = false
     this.spawnChild()
   }
 
@@ -36,8 +42,17 @@ export class AudioTee extends EventEmitter<AudioTeeEvents> {
     this.child = child
     this.lastChunkAt = Date.now()
 
+    // Without this, a spawn failure (missing/unsigned binary) raises an
+    // unhandled 'error' event and takes down the whole main process.
+    child.on('error', (err) => {
+      this.child = null
+      this.clearSilenceTimer()
+      this.emit('status', `system audio helper failed to start: ${err.message}`)
+    })
+
     child.stdout.on('data', (buf: Buffer) => {
       this.lastChunkAt = Date.now()
+      this.checkForSilentTap(buf)
       this.emit('chunk', buf)
     })
 
@@ -68,6 +83,25 @@ export class AudioTee extends EventEmitter<AudioTeeEvents> {
         this.restartChild()
       }
     }, 1000)
+  }
+
+  /** A tap without the System Audio Recording permission "works" but delivers
+   *  pure digital silence — surface that, since the OS gives no error at all. */
+  private checkForSilentTap(buf: Buffer): void {
+    if (this.nonZeroSeen || this.warnedAllZero) return
+    if (buf.some((b) => b !== 0)) {
+      this.nonZeroSeen = true
+      return
+    }
+    if (this.zeroRunStartedAt === 0) this.zeroRunStartedAt = Date.now()
+    if (Date.now() - this.zeroRunStartedAt > 10_000) {
+      this.warnedAllZero = true
+      this.emit(
+        'status',
+        'No system audio captured yet — if you expect to hear others, check ' +
+          'System Settings → Privacy & Security → Screen & System Audio Recording'
+      )
+    }
   }
 
   private restartChild(): void {

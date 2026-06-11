@@ -1,7 +1,7 @@
 import type { TranscriptSegment } from '@shared/types'
 
 // Static system prompt (stable prefix — cacheable).
-export const SYSTEM_PROMPT = `You are a meeting-notes editor. You will receive a meeting transcript with two speakers — "Me" (the note-taker) and "Them" (the other participants) — plus the rough notes the note-taker typed during the meeting.
+export const SYSTEM_PROMPT = `You are a meeting-notes editor. You will receive a meeting transcript with labeled speakers — "Me" (the note-taker) and one or more other participants labeled "Speaker 1", "Speaker 2", … (or "Them" when the voice could not be distinguished) — plus the rough notes the note-taker typed during the meeting. Speaker numbers identify distinct voices, not names; if the transcript reveals a speaker's name, you may use it when attributing statements.
 
 Produce enhanced meeting notes in Markdown:
 - Line 1: a short, descriptive meeting title as an H1 heading.
@@ -52,6 +52,11 @@ export function pmToPlainText(notesJson: string): string {
   }
 }
 
+function speakerLabel(s: TranscriptSegment): string {
+  if (s.channel === 'mic') return 'Me'
+  return s.speaker == null ? 'Them' : `Speaker ${s.speaker + 1}`
+}
+
 function formatTimestamp(ms: number): string {
   const totalSec = Math.floor(ms / 1000)
   const m = Math.floor(totalSec / 60)
@@ -79,10 +84,7 @@ export function buildUserMessage(args: {
 
   const transcript =
     args.segments
-      .map(
-        (s) =>
-          `[${formatTimestamp(s.startMs)}] [${s.channel === 'mic' ? 'Me' : 'Them'}] ${s.text}`
-      )
+      .map((s) => `[${formatTimestamp(s.startMs)}] [${speakerLabel(s)}] ${s.text}`)
       .join('\n') || '(no transcript)'
 
   return `Meeting: ${args.title || 'Untitled meeting'}

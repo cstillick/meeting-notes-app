@@ -6,12 +6,17 @@ export interface Bubble {
   channel: Channel
   text: string
   startMs: number
+  /** Diarized speaker index (system channel); undefined = unknown ("Them"). */
+  speaker?: number
 }
 
 interface ActiveMeetingState {
   recorderState: RecorderState
   recordingMeetingId: string | null
   statusDetail: string | null
+  /** Last failed start — shown in the UI even when the start came from the
+   *  detect panel / auto-start flow, which has no button to report through. */
+  lastError: string | null
   finals: Bubble[]
   interim: Partial<Record<Channel, Bubble>>
   micLevel: number
@@ -30,10 +35,17 @@ export const useActiveMeetingStore = create<ActiveMeetingState>((set, get) => {
     listenersAttached = true
     window.api.on('transcript:segment', (segment: LiveSegment) => {
       const { finals, interim } = get()
+      if (segment.suppressed) {
+        // Echo retraction: the text was remote audio leaking into the mic.
+        // Clear any live bubble showing it; never append to finals.
+        set({ interim: { ...interim, [segment.channel]: undefined } })
+        return
+      }
       const bubble: Bubble = {
         channel: segment.channel,
         text: segment.text,
-        startMs: segment.startMs
+        startMs: segment.startMs,
+        speaker: segment.speaker
       }
       if (segment.isFinal) {
         set({
@@ -58,21 +70,27 @@ export const useActiveMeetingStore = create<ActiveMeetingState>((set, get) => {
     recorderState: 'idle',
     recordingMeetingId: null,
     statusDetail: null,
+    lastError: null,
     finals: [],
     interim: {},
     micLevel: 0,
 
     startRecording: async (meetingId) => {
+      set({ lastError: null })
+      const fail = (message: string): string => {
+        set({ lastError: message })
+        return message
+      }
       try {
         micCapture = await startMicCapture()
       } catch {
-        return 'Microphone access denied — allow it in System Settings → Privacy'
+        return fail('Microphone access denied — allow it in System Settings → Privacy')
       }
       const result = await window.api.invoke('recorder:start', meetingId)
       if (!result.ok) {
         micCapture?.stop()
         micCapture = null
-        return result.error ?? 'Failed to start recording'
+        return fail(result.error ?? 'Failed to start recording')
       }
       meterTimer = setInterval(() => set({ micLevel: micCapture?.getLevel() ?? 0 }), 120)
       return null

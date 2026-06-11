@@ -1,6 +1,7 @@
 export const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 3000;
 
 CREATE TABLE IF NOT EXISTS meetings (
   id            TEXT PRIMARY KEY,
@@ -34,3 +35,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
   body
 );
 `
+
+/** Versioned migrations, run once each (tracked via PRAGMA user_version). */
+export const MIGRATIONS: string[] = [
+  // v1: dedupe transcript segments (Deepgram retransmits inserted duplicates
+  // before the unique index existed), then enforce uniqueness going forward.
+  `
+  DELETE FROM transcript_segments WHERE id NOT IN (
+    SELECT MIN(id) FROM transcript_segments
+    GROUP BY meeting_id, channel, start_ms, end_ms, text
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_segments_unique
+    ON transcript_segments(meeting_id, channel, start_ms, end_ms, text);
+  `,
+  // v2: per-speaker diarization on the system channel. The unique index must
+  // treat NULL speakers as equal (SQLite considers NULLs distinct in unique
+  // indexes), so it indexes COALESCE(speaker, -1) — otherwise mic rows would
+  // lose retransmit dedupe.
+  `
+  ALTER TABLE transcript_segments ADD COLUMN speaker INTEGER;
+  DROP INDEX IF EXISTS idx_segments_unique;
+  CREATE UNIQUE INDEX idx_segments_unique
+    ON transcript_segments(meeting_id, channel, start_ms, end_ms, text, COALESCE(speaker, -1));
+  `
+]

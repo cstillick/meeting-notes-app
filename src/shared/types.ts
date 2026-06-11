@@ -31,6 +31,8 @@ export interface TranscriptSegment {
   text: string
   startMs: number
   endMs: number
+  /** Diarized speaker index on the system channel; null for mic and legacy rows. */
+  speaker: number | null
 }
 
 /** Live segment streamed to the renderer; interim segments replace the open bubble. */
@@ -40,6 +42,9 @@ export interface LiveSegment {
   startMs: number
   endMs: number
   isFinal: boolean
+  speaker?: number
+  /** Echo suppression retracted this segment — clear any open bubble for the channel. */
+  suppressed?: boolean
 }
 
 export type RecorderState = 'idle' | 'starting' | 'recording' | 'stopping' | 'error'
