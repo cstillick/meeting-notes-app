@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { AVAILABLE_MODELS } from '@shared/types'
 import { useSettingsStore } from '../../stores/settingsStore'
 
 function KeyField({
@@ -92,12 +93,24 @@ export default function SettingsView(): React.JSX.Element {
           />
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-stone-700">Claude model</span>
-            <input
-              type="text"
+            <select
               value={model}
               onChange={(e) => setModel(e.target.value)}
               className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-amber-500 focus:ring-1 focus:ring-amber-500 focus:outline-none"
-            />
+            >
+              {AVAILABLE_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+              {model && !AVAILABLE_MODELS.some((m) => m.id === model) && (
+                <option value={model}>{model} (custom)</option>
+              )}
+            </select>
+            <span className="mt-1 block text-xs text-stone-400">
+              {AVAILABLE_MODELS.find((m) => m.id === model)?.hint ??
+                'Used to enhance notes and answer chat questions.'}
+            </span>
           </label>
           <div className="flex items-center gap-3">
             <button

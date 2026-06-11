@@ -70,6 +70,21 @@ export interface SettingsUpdate {
 
 export const DEFAULT_MODEL = 'claude-opus-4-8'
 
+/** Claude models the user can pick in Settings. id is the exact API model string. */
+export interface ModelOption {
+  id: string
+  label: string
+  hint: string
+}
+
+export const AVAILABLE_MODELS: ModelOption[] = [
+  { id: 'claude-fable-5', label: 'Claude Fable 5', hint: 'Most capable — slowest, priciest' },
+  { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', hint: 'Most capable Opus (default)' },
+  { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', hint: 'Previous-gen Opus' },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', hint: 'Balanced speed and quality' },
+  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', hint: 'Fastest and cheapest' }
+]
+
 /** One persisted chat turn. meetingId null = the global (cross-meeting) thread. */
 export interface ChatMessage {
   id: number
