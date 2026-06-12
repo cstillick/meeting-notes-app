@@ -122,6 +122,15 @@ export function saveEnhanced(
   }
 }
 
+/** Persist a manual edit to an existing enhanced doc. Unlike saveEnhanced this
+ *  leaves enhanced_at, title, and status untouched — it's an edit, not a fresh
+ *  enhancement. */
+export function saveEnhancedEdit(id: string, enhancedJson: string, enhancedMd: string): void {
+  getDb()
+    .prepare('UPDATE meetings SET enhanced_json = ?, enhanced_md = ? WHERE id = ?')
+    .run(enhancedJson, enhancedMd, id)
+}
+
 export function deleteMeeting(id: string): void {
   const db = getDb()
   db.exec('BEGIN')

@@ -190,7 +190,7 @@ export default function NoteView(): React.JSX.Element {
 
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-y-auto px-8 pt-6 pb-24">
-          {(meeting?.enhancedJson || isStreamingThis) && (
+          {meeting && (
             <div className="mb-4 flex gap-1 border-b border-stone-200">
               {(['notes', 'enhanced'] as const).map((t) => (
                 <button
@@ -220,14 +220,16 @@ export default function NoteView(): React.JSX.Element {
           <div className={tab === 'notes' ? '' : 'hidden'}>
             {meeting && <NoteEditor meetingId={id} initialContent={meeting.notesJson} />}
           </div>
-          {tab === 'enhanced' &&
-            (isStreamingThis ? (
+          {/* Kept mounted (hidden) when inactive so in-progress edits survive tab switches. */}
+          <div className={tab === 'enhanced' ? '' : 'hidden'}>
+            {isStreamingThis ? (
               <StreamingPreview markdown={enhance.buffer} />
             ) : meeting?.enhancedJson ? (
-              <EnhancedDoc docJson={meeting.enhancedJson} />
+              <EnhancedDoc meetingId={id} docJson={meeting.enhancedJson} />
             ) : (
               <p className="text-sm text-stone-400">No enhanced notes yet.</p>
-            ))}
+            )}
+          </div>
         </main>
         {showTranscript && (
           <aside className="w-80 shrink-0 border-l border-stone-200 bg-stone-100/60">

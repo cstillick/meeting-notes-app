@@ -36,6 +36,8 @@ export interface InvokeMap {
     enhancedMd: string,
     title?: string
   ) => void
+  /** Persist a manual edit to the enhanced doc (no re-enhance / re-title). */
+  'enhanced:save': (id: string, enhancedJson: string) => void
   'search:query': (q: string) => MeetingSummary[]
   /** Buttons on the floating "meeting detected" panel. */
   'detect:action': (action: 'start' | 'dismiss') => void

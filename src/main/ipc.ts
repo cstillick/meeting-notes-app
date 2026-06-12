@@ -18,6 +18,7 @@ import {
   listMeetings,
   saveNotes,
   saveEnhanced,
+  saveEnhancedEdit,
   updateTitle
 } from './db/meetings'
 import {
@@ -29,7 +30,7 @@ import {
 } from './db/folders'
 import { getSegments } from './db/transcripts'
 import { clearChat, getChatHistory } from './db/chats'
-import { reindexMeeting, searchMeetings } from './db/search'
+import { pmToText, reindexMeeting, searchMeetings } from './db/search'
 import { chatService } from './chat/chatService'
 import { initEmbedder, scheduleEmbed } from './embeddings/embedder'
 
@@ -92,6 +93,11 @@ export function registerIpc(): void {
 
   handle('enhance:saveResult', (id, enhancedJson, enhancedMd, title) => {
     saveEnhanced(id, enhancedJson, enhancedMd, title)
+    reindexMeeting(id)
+  })
+
+  handle('enhanced:save', (id, enhancedJson) => {
+    saveEnhancedEdit(id, enhancedJson, pmToText(enhancedJson))
     reindexMeeting(id)
   })
 

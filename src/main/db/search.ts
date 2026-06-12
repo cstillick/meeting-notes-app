@@ -12,7 +12,7 @@ export function setOnReindexed(cb: (meetingId: string) => void): void {
 
 /** Extract plain text from ProseMirror JSON (best-effort, for indexing).
  *  Iterative walk: notes_json depth is untrusted, recursion would overflow. */
-function pmToText(json: string): string {
+export function pmToText(json: string): string {
   try {
     const parts: string[] = []
     const stack: unknown[] = [JSON.parse(json)]
