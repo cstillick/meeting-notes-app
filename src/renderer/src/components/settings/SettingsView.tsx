@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AVAILABLE_MODELS } from '@shared/types'
+import { AVAILABLE_MODELS, type Theme } from '@shared/types'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { applyTheme } from '../../theme'
+
+const THEME_OPTIONS: { value: Theme; label: string }[] = [
+  { value: 'light', label: 'Light mode' },
+  { value: 'dark', label: 'Dark mode' },
+  { value: 'system', label: 'Default to system settings' }
+]
 
 function KeyField({
   label,
@@ -45,6 +52,7 @@ export default function SettingsView(): React.JSX.Element {
   const [anthropicKey, setAnthropicKey] = useState('')
   const [voyageKey, setVoyageKey] = useState('')
   const [model, setModel] = useState('')
+  const [theme, setTheme] = useState<Theme>('system')
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
@@ -52,15 +60,25 @@ export default function SettingsView(): React.JSX.Element {
   }, [load])
 
   useEffect(() => {
-    if (settings) setModel(settings.model)
+    if (settings) {
+      setModel(settings.model)
+      setTheme(settings.theme)
+    }
   }, [settings])
+
+  // Preview the chosen appearance immediately; onSave persists it.
+  function onThemeChange(next: Theme): void {
+    setTheme(next)
+    applyTheme(next)
+  }
 
   async function onSave(): Promise<void> {
     await save({
       ...(deepgramKey ? { deepgramKey } : {}),
       ...(anthropicKey ? { anthropicKey } : {}),
       ...(voyageKey ? { voyageKey } : {}),
-      model
+      model,
+      theme
     })
     setDeepgramKey('')
     setAnthropicKey('')
@@ -125,6 +143,23 @@ export default function SettingsView(): React.JSX.Element {
             <span className="mt-1 block text-xs text-stone-400">
               {AVAILABLE_MODELS.find((m) => m.id === model)?.hint ??
                 'Used to enhance notes and answer chat questions.'}
+            </span>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-stone-700">Appearance</span>
+            <select
+              value={theme}
+              onChange={(e) => onThemeChange(e.target.value as Theme)}
+              className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-amber-500 focus:ring-1 focus:ring-amber-500 focus:outline-none"
+            >
+              {THEME_OPTIONS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs text-stone-400">
+              System follows your macOS Appearance setting.
             </span>
           </label>
           <div className="flex items-center gap-3">
