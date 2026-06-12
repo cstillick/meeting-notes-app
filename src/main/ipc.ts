@@ -20,10 +20,18 @@ import {
   saveEnhanced,
   updateTitle
 } from './db/meetings'
+import {
+  createFolder,
+  deleteFolder,
+  listFolders,
+  renameFolder,
+  setMeetingFolder
+} from './db/folders'
 import { getSegments } from './db/transcripts'
 import { clearChat, getChatHistory } from './db/chats'
 import { reindexMeeting, searchMeetings } from './db/search'
 import { chatService } from './chat/chatService'
+import { initEmbedder, scheduleEmbed } from './embeddings/embedder'
 
 /** Typed ipcMain.handle wrapper tying handlers to the shared contract. */
 export function handle<K extends keyof InvokeMap>(
@@ -47,7 +55,16 @@ export function broadcast<K extends keyof EventMap>(
 
 export function registerIpc(): void {
   handle('settings:get', () => getSettingsView())
-  handle('settings:set', (update) => updateSettings(update))
+  handle('settings:set', (update) => {
+    const view = updateSettings(update)
+    // A newly added Voyage key should pick up the un-embedded backlog.
+    if (update.voyageKey) scheduleEmbed()
+    return view
+  })
+
+  // Chunk + embed pipeline for semantic chat retrieval (no-op without a
+  // Voyage key). Hooks reindexMeeting and backfills pre-existing notes.
+  initEmbedder()
 
   handle('meetings:create', () => createMeeting())
   handle('meetings:list', () => listMeetings())
@@ -61,6 +78,12 @@ export function registerIpc(): void {
     reindexMeeting(id)
   })
   handle('meetings:delete', (id) => deleteMeeting(id))
+  handle('meetings:setFolder', (id, folderId) => setMeetingFolder(id, folderId))
+
+  handle('folders:list', () => listFolders())
+  handle('folders:create', (name) => createFolder(name))
+  handle('folders:rename', (id, name) => renameFolder(id, name))
+  handle('folders:delete', (id) => deleteFolder(id))
 
   handle('notes:save', (id, notesJson) => {
     saveNotes(id, notesJson)
@@ -106,9 +129,9 @@ export function registerIpc(): void {
   enhancer.on('error', (d) => broadcast('enhance:error', d))
 
   handle('chat:send', (req) => chatService.send(req))
-  handle('chat:history', (meetingId) => getChatHistory(meetingId))
+  handle('chat:history', (meetingId, folderId) => getChatHistory(meetingId, folderId))
   handle('chat:cancel', (chatKey) => chatService.cancel(chatKey))
-  handle('chat:clear', (meetingId) => clearChat(meetingId))
+  handle('chat:clear', (meetingId, folderId) => clearChat(meetingId, folderId))
 
   chatService.on('delta', (d) => broadcast('chat:delta', d))
   chatService.on('done', (d) => broadcast('chat:done', d))

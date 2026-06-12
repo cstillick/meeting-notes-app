@@ -43,6 +43,7 @@ export default function SettingsView(): React.JSX.Element {
   const { settings, load, save } = useSettingsStore()
   const [deepgramKey, setDeepgramKey] = useState('')
   const [anthropicKey, setAnthropicKey] = useState('')
+  const [voyageKey, setVoyageKey] = useState('')
   const [model, setModel] = useState('')
   const [saved, setSaved] = useState(false)
 
@@ -58,10 +59,12 @@ export default function SettingsView(): React.JSX.Element {
     await save({
       ...(deepgramKey ? { deepgramKey } : {}),
       ...(anthropicKey ? { anthropicKey } : {}),
+      ...(voyageKey ? { voyageKey } : {}),
       model
     })
     setDeepgramKey('')
     setAnthropicKey('')
+    setVoyageKey('')
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -91,6 +94,18 @@ export default function SettingsView(): React.JSX.Element {
             value={anthropicKey}
             onChange={setAnthropicKey}
           />
+          <div>
+            <KeyField
+              label="Voyage AI API key (optional)"
+              placeholder="Enables semantic search in chat"
+              isSet={settings?.voyageKeySet ?? false}
+              value={voyageKey}
+              onChange={setVoyageKey}
+            />
+            <span className="mt-1 block text-xs text-stone-400">
+              Without it, cross-note chat uses keyword search only. Get a key at voyageai.com.
+            </span>
+          </div>
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-stone-700">Claude model</span>
             <select
@@ -123,7 +138,7 @@ export default function SettingsView(): React.JSX.Element {
           </div>
           <p className="text-xs leading-relaxed text-stone-400">
             Keys are encrypted with the macOS keychain (Electron safeStorage) and stored locally.
-            They never leave this machine except in requests to Deepgram and Anthropic.
+            They never leave this machine except in requests to Deepgram, Anthropic, and Voyage.
           </p>
         </div>
       </main>

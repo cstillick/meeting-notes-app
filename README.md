@@ -30,6 +30,8 @@ System: audiotee helper (Core Audio process tap) ──────────�
 - macOS 14.2+ (Core Audio process taps), Apple Silicon
 - A [Deepgram API key](https://console.deepgram.com) (free credit tier available)
 - An [Anthropic API key](https://console.anthropic.com)
+- Optional: a [Voyage AI API key](https://www.voyageai.com) — enables semantic (embedding)
+  search for cross-note and folder chat. Without it, chat retrieval is keyword-only.
 
 ## Setup
 

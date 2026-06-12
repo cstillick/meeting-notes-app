@@ -7,12 +7,14 @@ interface StoredSettings {
   /** base64 of safeStorage-encrypted key, or null */
   deepgramKeyEnc: string | null
   anthropicKeyEnc: string | null
+  voyageKeyEnc: string | null
   model: string
 }
 
 const DEFAULTS: StoredSettings = {
   deepgramKeyEnc: null,
   anthropicKeyEnc: null,
+  voyageKeyEnc: null,
   model: DEFAULT_MODEL
 }
 
@@ -63,6 +65,7 @@ export function getSettingsView(): SettingsView {
   return {
     deepgramKeySet: s.deepgramKeyEnc !== null,
     anthropicKeySet: s.anthropicKeyEnc !== null,
+    voyageKeySet: s.voyageKeyEnc !== null,
     model: s.model
   }
 }
@@ -76,6 +79,10 @@ export function updateSettings(update: SettingsUpdate): SettingsView {
   if (update.anthropicKey !== undefined) {
     const key = update.anthropicKey?.trim()
     s.anthropicKeyEnc = key ? encrypt(key) : null
+  }
+  if (update.voyageKey !== undefined) {
+    const key = update.voyageKey?.trim()
+    s.voyageKeyEnc = key ? encrypt(key) : null
   }
   if (update.model !== undefined && update.model.trim()) {
     s.model = update.model.trim()
@@ -92,6 +99,10 @@ export function getDeepgramKey(): string | null {
 
 export function getAnthropicKey(): string | null {
   return decrypt(load().anthropicKeyEnc)?.trim() || null
+}
+
+export function getVoyageKey(): string | null {
+  return decrypt(load().voyageKeyEnc)?.trim() || null
 }
 
 export function getModel(): string {

@@ -1,8 +1,8 @@
 import { create } from 'zustand'
-import type { ChatMessage } from '@shared/types'
+import { chatKeyFor, type ChatMessage } from '@shared/types'
 import { useActiveMeetingStore } from './activeMeetingStore'
 
-export const chatKeyOf = (meetingId: string | null): string => meetingId ?? 'global'
+export const chatKeyOf = chatKeyFor
 
 export interface ChatThread {
   messages: ChatMessage[]
@@ -28,10 +28,10 @@ interface ChatState {
   threads: Record<string, ChatThread>
   /** chatKey of the expanded panel, if any (one open at a time) */
   openKey: string | null
-  loadHistory: (meetingId: string | null) => Promise<void>
-  send: (meetingId: string | null, question: string) => Promise<void>
-  cancel: (meetingId: string | null) => void
-  clear: (meetingId: string | null) => Promise<void>
+  loadHistory: (meetingId: string | null, folderId?: string | null) => Promise<void>
+  send: (meetingId: string | null, folderId: string | null, question: string) => Promise<void>
+  cancel: (meetingId: string | null, folderId?: string | null) => void
+  clear: (meetingId: string | null, folderId?: string | null) => Promise<void>
   setOpen: (key: string | null) => void
 }
 
@@ -110,17 +110,17 @@ export const useChatStore = create<ChatState>((set, get) => {
     threads: {},
     openKey: null,
 
-    loadHistory: async (meetingId) => {
-      const chatKey = chatKeyOf(meetingId)
+    loadHistory: async (meetingId, folderId = null) => {
+      const chatKey = chatKeyOf(meetingId, folderId)
       if (get().threads[chatKey]?.historyLoaded) return
-      const messages = await window.api.invoke('chat:history', meetingId)
+      const messages = await window.api.invoke('chat:history', meetingId, folderId)
       const thread = get().threads[chatKey] ?? EMPTY_THREAD
       // A stream may have started while history was in flight — keep its state.
       patchThread(chatKey, { ...thread, messages, historyLoaded: true })
     },
 
-    send: async (meetingId, question) => {
-      const chatKey = chatKeyOf(meetingId)
+    send: async (meetingId, folderId, question) => {
+      const chatKey = chatKeyOf(meetingId, folderId)
       const q = question.trim()
       if (!q) return
       const thread = get().threads[chatKey] ?? EMPTY_THREAD
@@ -147,7 +147,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       const liveFinals =
         meetingId !== null && recordingMeetingId === meetingId ? finals : undefined
 
-      const result = await window.api.invoke('chat:send', { meetingId, question: q, liveFinals })
+      const result = await window.api.invoke('chat:send', {
+        meetingId,
+        folderId,
+        question: q,
+        liveFinals
+      })
       if (!result.ok) {
         const t = get().threads[chatKey] ?? EMPTY_THREAD
         patchThread(chatKey, {
@@ -158,13 +163,13 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
     },
 
-    cancel: (meetingId) => {
-      void window.api.invoke('chat:cancel', chatKeyOf(meetingId))
+    cancel: (meetingId, folderId = null) => {
+      void window.api.invoke('chat:cancel', chatKeyOf(meetingId, folderId))
     },
 
-    clear: async (meetingId) => {
-      await window.api.invoke('chat:clear', meetingId)
-      patchThread(chatKeyOf(meetingId), { ...EMPTY_THREAD, historyLoaded: true })
+    clear: async (meetingId, folderId = null) => {
+      await window.api.invoke('chat:clear', meetingId, folderId)
+      patchThread(chatKeyOf(meetingId, folderId), { ...EMPTY_THREAD, historyLoaded: true })
     },
 
     setOpen: (key) => set({ openKey: key })

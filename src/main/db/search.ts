@@ -1,6 +1,14 @@
 import type { MeetingSummary } from '@shared/types'
 import { getDb } from './database'
 import { listMeetings } from './meetings'
+import { rebuildChunks } from './chunks'
+
+/** Post-reindex hook (set by the embedder at startup) so freshly rebuilt
+ *  chunks get embedded without the db layer importing network code. */
+let onReindexed: ((meetingId: string) => void) | null = null
+export function setOnReindexed(cb: (meetingId: string) => void): void {
+  onReindexed = cb
+}
 
 /** Extract plain text from ProseMirror JSON (best-effort, for indexing).
  *  Iterative walk: notes_json depth is untrusted, recursion would overflow. */
@@ -57,6 +65,11 @@ export function reindexMeeting(meetingId: string): void {
     db.exec('RELEASE reindex')
     throw err
   }
+
+  // Same sources as the FTS body, but as separate sections so an edit in one
+  // never shifts another's chunk boundaries.
+  rebuildChunks(meetingId, [pmToText(meeting.notes_json), meeting.enhanced_md ?? '', transcript])
+  onReindexed?.(meetingId)
 }
 
 // Filler words a natural-language question carries that would drown an FTS
@@ -123,7 +136,7 @@ export function searchMeetings(query: string): MeetingSummary[] {
   const placeholders = ids.map(() => '?').join(',')
   const rows = db
     .prepare(
-      `SELECT id, title, created_at, started_at, ended_at, status
+      `SELECT id, title, created_at, started_at, ended_at, status, folder_id
          FROM meetings WHERE id IN (${placeholders})
         ORDER BY created_at DESC`
     )
@@ -134,6 +147,7 @@ export function searchMeetings(query: string): MeetingSummary[] {
     started_at: number | null
     ended_at: number | null
     status: MeetingSummary['status']
+    folder_id: string | null
   }[]
   return rows.map((r) => ({
     id: r.id,
@@ -141,6 +155,7 @@ export function searchMeetings(query: string): MeetingSummary[] {
     createdAt: r.created_at,
     startedAt: r.started_at,
     endedAt: r.ended_at,
-    status: r.status
+    status: r.status,
+    folderId: r.folder_id
   }))
 }

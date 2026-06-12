@@ -69,5 +69,37 @@ export const MIGRATIONS: string[] = [
     created_at INTEGER NOT NULL
   );
   CREATE INDEX idx_chat_meeting ON chat_messages(meeting_id, id);
+  `,
+  // v4: note folders. A note may sit in one folder (folder_id NULL = unfiled);
+  // deleting a folder unfiles its notes (SET NULL) rather than deleting them.
+  // chat_messages gains folder_id for the per-folder thread: meeting_id and
+  // folder_id both NULL = the global thread. Added columns must default NULL
+  // for ALTER TABLE ... ADD COLUMN with a REFERENCES clause to be legal.
+  `
+  CREATE TABLE folders (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  ALTER TABLE meetings ADD COLUMN folder_id TEXT
+    REFERENCES folders(id) ON DELETE SET NULL;
+  CREATE INDEX idx_meetings_folder ON meetings(folder_id);
+  ALTER TABLE chat_messages ADD COLUMN folder_id TEXT
+    REFERENCES folders(id) ON DELETE CASCADE;
+  CREATE INDEX idx_chat_folder ON chat_messages(folder_id, id);
+  `,
+  // v5: semantic retrieval for cross-note chat. Each note's text (rough notes,
+  // enhanced notes, transcript) is split into ~1.6K-char chunks; embedding is a
+  // little-endian float32 BLOB filled in lazily by the embedder (NULL until
+  // embedded, or while no Voyage key is set). Rebuilt on every reindex.
+  `
+  CREATE TABLE chunks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL,
+    text       TEXT NOT NULL,
+    embedding  BLOB,
+    UNIQUE(meeting_id, seq)
+  );
   `
 ]

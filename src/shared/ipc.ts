@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   ChatSendRequest,
+  Folder,
   LiveSegment,
   Meeting,
   MeetingSummary,
@@ -17,7 +18,14 @@ export interface InvokeMap {
   'meetings:get': (id: string) => { meeting: Meeting; segments: TranscriptSegment[] } | null
   'meetings:updateTitle': (id: string, title: string) => void
   'meetings:delete': (id: string) => void
+  /** Move a note into a folder, or null to unfile it. */
+  'meetings:setFolder': (id: string, folderId: string | null) => void
   'notes:save': (id: string, notesJson: string) => void
+  'folders:list': () => Folder[]
+  'folders:create': (name: string) => Folder
+  'folders:rename': (id: string, name: string) => void
+  /** Delete a folder. Its notes are unfiled (kept), not deleted. */
+  'folders:delete': (id: string) => void
   'recorder:start': (meetingId: string) => { ok: boolean; error?: string }
   'recorder:stop': () => void
   'enhance:start': (meetingId: string) => { ok: boolean; error?: string }
@@ -38,10 +46,10 @@ export interface InvokeMap {
   'settings:get': () => SettingsView
   'settings:set': (update: SettingsUpdate) => SettingsView
   /** Ask the floating chat. meetingId null = global (cross-meeting) thread. */
-  'chat:send': (req: ChatSendRequest) => { ok: boolean; error?: string }
-  'chat:history': (meetingId: string | null) => ChatMessage[]
+  'chat:send': (req: ChatSendRequest) => Promise<{ ok: boolean; error?: string }>
+  'chat:history': (meetingId: string | null, folderId: string | null) => ChatMessage[]
   'chat:cancel': (chatKey: string) => void
-  'chat:clear': (meetingId: string | null) => void
+  'chat:clear': (meetingId: string | null, folderId: string | null) => void
 }
 
 /** Renderer → main fire-and-forget (ipcRenderer.send). High-frequency channels. */
