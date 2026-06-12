@@ -57,7 +57,7 @@ function RecordButton({ meetingId }: { meetingId: string }): React.JSX.Element {
       >
         <span
           className={`inline-block h-2 w-2 rounded-full ${
-            recording ? 'animate-pulse bg-white' : 'bg-red-500'
+            recording ? 'animate-pulse bg-[#ffffff]' : 'bg-red-500'
           }`}
         />
         {recorderState === 'starting' && isThisMeeting

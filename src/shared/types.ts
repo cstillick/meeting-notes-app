@@ -65,6 +65,11 @@ export interface RecorderStatus {
   detail?: string
 }
 
+/** Appearance preference. 'system' follows the OS (macOS) light/dark setting. */
+export type Theme = 'light' | 'dark' | 'system'
+
+export const DEFAULT_THEME: Theme = 'system'
+
 /** What the renderer is allowed to know about settings — never the key material. */
 export interface SettingsView {
   deepgramKeySet: boolean
@@ -72,6 +77,7 @@ export interface SettingsView {
   /** Voyage AI key — optional; enables semantic (vector) retrieval for cross-note chat. */
   voyageKeySet: boolean
   model: string
+  theme: Theme
 }
 
 export interface SettingsUpdate {
@@ -79,6 +85,7 @@ export interface SettingsUpdate {
   anthropicKey?: string
   voyageKey?: string
   model?: string
+  theme?: Theme
 }
 
 export const DEFAULT_MODEL = 'claude-opus-4-8'

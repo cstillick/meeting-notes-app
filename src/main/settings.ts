@@ -1,7 +1,13 @@
 import { app, safeStorage } from 'electron'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { DEFAULT_MODEL, type SettingsUpdate, type SettingsView } from '@shared/types'
+import {
+  DEFAULT_MODEL,
+  DEFAULT_THEME,
+  type SettingsUpdate,
+  type SettingsView,
+  type Theme
+} from '@shared/types'
 
 interface StoredSettings {
   /** base64 of safeStorage-encrypted key, or null */
@@ -9,14 +15,18 @@ interface StoredSettings {
   anthropicKeyEnc: string | null
   voyageKeyEnc: string | null
   model: string
+  theme: Theme
 }
 
 const DEFAULTS: StoredSettings = {
   deepgramKeyEnc: null,
   anthropicKeyEnc: null,
   voyageKeyEnc: null,
-  model: DEFAULT_MODEL
+  model: DEFAULT_MODEL,
+  theme: DEFAULT_THEME
 }
+
+const THEMES: readonly Theme[] = ['light', 'dark', 'system']
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
@@ -66,7 +76,8 @@ export function getSettingsView(): SettingsView {
     deepgramKeySet: s.deepgramKeyEnc !== null,
     anthropicKeySet: s.anthropicKeyEnc !== null,
     voyageKeySet: s.voyageKeyEnc !== null,
-    model: s.model
+    model: s.model,
+    theme: THEMES.includes(s.theme) ? s.theme : DEFAULT_THEME
   }
 }
 
@@ -86,6 +97,9 @@ export function updateSettings(update: SettingsUpdate): SettingsView {
   }
   if (update.model !== undefined && update.model.trim()) {
     s.model = update.model.trim()
+  }
+  if (update.theme !== undefined && THEMES.includes(update.theme)) {
+    s.theme = update.theme
   }
   persist(s)
   return getSettingsView()
