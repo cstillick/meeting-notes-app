@@ -1,4 +1,4 @@
-# Granola Clone
+# My Personal Meeting Transcriber with AI Enhancement Notes App (Granola Clone)
 
 An AI meeting notepad for macOS, modeled on [Granola](https://granola.ai): no bot joins your
 meeting — the app captures your **microphone** and **system audio** directly, transcribes both
