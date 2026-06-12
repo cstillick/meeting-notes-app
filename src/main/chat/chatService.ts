@@ -2,14 +2,17 @@
 // Opus 4.8+: no temperature/top_p/top_k (they 400); adaptive thinking on.
 import Anthropic from '@anthropic-ai/sdk'
 import { EventEmitter } from 'events'
-import type { ChatMessage, ChatSendRequest } from '@shared/types'
+import { chatKeyFor, type ChatMessage, type ChatSendRequest } from '@shared/types'
 import { getAnthropicKey, getModel } from '../settings'
 import { getMeeting } from '../db/meetings'
+import { getFolder } from '../db/folders'
 import { getSegments } from '../db/transcripts'
 import { getChatHistory, insertChatMessage } from '../db/chats'
 import {
+  CHAT_FOLDER_SYSTEM,
   CHAT_GLOBAL_SYSTEM,
   CHAT_MEETING_SYSTEM,
+  buildFolderContext,
   buildGlobalContext,
   buildMeetingContext
 } from './prompt'
@@ -22,8 +25,9 @@ export class ChatService extends EventEmitter<{
   /** One in-flight stream per thread; meeting chats and the global chat can overlap. */
   private active = new Map<string, AbortController>()
 
-  send(req: ChatSendRequest): { ok: boolean; error?: string } {
-    const chatKey = req.meetingId ?? 'global'
+  async send(req: ChatSendRequest): Promise<{ ok: boolean; error?: string }> {
+    const folderId = req.meetingId === null ? (req.folderId ?? null) : null
+    const chatKey = chatKeyFor(req.meetingId, folderId)
     if (this.active.has(chatKey)) {
       return { ok: false, error: 'Still answering the previous question' }
     }
@@ -36,11 +40,36 @@ export class ChatService extends EventEmitter<{
       return { ok: false, error: 'Anthropic API key not set — add it in Settings' }
     }
 
+    // Reserve the thread before any await: context building is now async
+    // (query embedding), and a second send racing past the has() check above
+    // would double-stream and double-insert.
+    const abort = new AbortController()
+    this.active.set(chatKey, abort)
+    try {
+      return await this.prepare(req, chatKey, folderId, question, apiKey, abort)
+    } catch (err) {
+      this.active.delete(chatKey)
+      throw err
+    }
+  }
+
+  /** Builds context + history and starts the stream. The chatKey is already
+   *  reserved; every error path must release it (handled by send's catch and
+   *  the explicit deletes here). */
+  private async prepare(
+    req: ChatSendRequest,
+    chatKey: string,
+    folderId: string | null,
+    question: string,
+    apiKey: string,
+    abort: AbortController
+  ): Promise<{ ok: boolean; error?: string }> {
     let system: Anthropic.TextBlockParam[]
     let userTurn: string
     if (req.meetingId !== null) {
       const meeting = getMeeting(req.meetingId)
       if (!meeting) {
+        this.active.delete(chatKey)
         return { ok: false, error: 'Meeting not found' }
       }
       system = [
@@ -56,23 +85,30 @@ export class ChatService extends EventEmitter<{
         }
       ]
       userTurn = question
+    } else if (folderId !== null) {
+      const folder = getFolder(folderId)
+      if (!folder) {
+        this.active.delete(chatKey)
+        return { ok: false, error: 'Folder not found' }
+      }
+      system = [{ type: 'text', text: CHAT_FOLDER_SYSTEM, cache_control: { type: 'ephemeral' } }]
+      // Retrieval context (this folder's notes only) lives in the current turn.
+      userTurn = await buildFolderContext(question, folderId, folder.name)
     } else {
       system = [{ type: 'text', text: CHAT_GLOBAL_SYSTEM, cache_control: { type: 'ephemeral' } }]
       // Retrieval context lives only in the current turn; history is replayed
       // as bare Q/A so stale excerpts never accumulate across turns.
-      userTurn = buildGlobalContext(question)
+      userTurn = await buildGlobalContext(question)
     }
 
     // History before this question's row, replayed as plain alternating turns.
-    const history = getChatHistory(req.meetingId).map((m) => ({
+    const history = getChatHistory(req.meetingId, folderId).map((m) => ({
       role: m.role,
       content: m.content
     }))
-    insertChatMessage(req.meetingId, 'user', question)
+    insertChatMessage(req.meetingId, folderId, 'user', question)
 
-    const abort = new AbortController()
-    this.active.set(chatKey, abort)
-    void this.run(apiKey, chatKey, req.meetingId, system, history, userTurn, abort)
+    void this.run(apiKey, chatKey, req.meetingId, folderId, system, history, userTurn, abort)
     return { ok: true }
   }
 
@@ -80,6 +116,7 @@ export class ChatService extends EventEmitter<{
     apiKey: string,
     chatKey: string,
     meetingId: string | null,
+    folderId: string | null,
     system: Anthropic.TextBlockParam[],
     history: { role: 'user' | 'assistant'; content: string }[],
     userTurn: string,
@@ -106,7 +143,7 @@ export class ChatService extends EventEmitter<{
         }
       }
       await stream.finalMessage()
-      const message = insertChatMessage(meetingId, 'assistant', markdown)
+      const message = insertChatMessage(meetingId, folderId, 'assistant', markdown)
       this.emit('done', { chatKey, markdown, message })
     } catch (err) {
       // The user row stays — history remains coherent for a retry.

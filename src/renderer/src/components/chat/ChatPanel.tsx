@@ -5,12 +5,16 @@ import { ChatMarkdown } from './ChatMarkdown'
 
 export default function ChatPanel({
   meetingId,
+  folderId = null,
+  folderName,
   onClose
 }: {
   meetingId: string | null
+  folderId?: string | null
+  folderName?: string
   onClose: () => void
 }): React.JSX.Element {
-  const chatKey = chatKeyOf(meetingId)
+  const chatKey = chatKeyOf(meetingId, folderId)
   const thread = useChatStore((s) => s.threads[chatKey])
   const { send, clear } = useChatStore()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -29,14 +33,18 @@ export default function ChatPanel({
   async function onClear(): Promise<void> {
     if (messages.length === 0) return
     if (!confirm('Clear this conversation?')) return
-    await clear(meetingId)
+    await clear(meetingId, folderId)
   }
 
   return (
     <div className="absolute bottom-full mb-2 flex max-h-[60vh] w-full flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-xl">
       <header className="flex shrink-0 items-center justify-between border-b border-stone-100 px-4 py-2.5">
         <span className="text-xs font-semibold tracking-wide text-stone-500">
-          {meetingId ? 'Ask about this meeting' : 'Ask across all meetings'}
+          {meetingId
+            ? 'Ask about this meeting'
+            : folderId
+              ? `Ask across ${folderName || 'this folder'}`
+              : 'Ask across all meetings'}
         </span>
         <div className="flex items-center gap-1">
           {messages.length > 0 && (
@@ -62,7 +70,9 @@ export default function ChatPanel({
           <p className="py-6 text-center text-sm text-stone-400">
             {meetingId
               ? 'Ask anything about this meeting — works while it’s still recording.'
-              : 'Ask anything about your meetings, like “what did we decide about pricing?”'}
+              : folderId
+                ? `Ask anything about the notes in ${folderName || 'this folder'} — answers only use this folder.`
+                : 'Ask anything about your meetings, like “what did we decide about pricing?”'}
           </p>
         )}
 
@@ -94,7 +104,7 @@ export default function ChatPanel({
             <span className="min-w-0 break-words">{error}</span>
             {thread?.lastQuestion && (
               <button
-                onClick={() => void send(meetingId, thread.lastQuestion!)}
+                onClick={() => void send(meetingId, folderId, thread.lastQuestion!)}
                 className="shrink-0 rounded border border-red-300 px-2 py-0.5 text-xs font-medium hover:bg-red-100"
               >
                 Retry

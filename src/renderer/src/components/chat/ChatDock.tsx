@@ -3,9 +3,18 @@ import { useChatStore, chatKeyOf } from '../../stores/chatStore'
 import ChatPanel from './ChatPanel'
 
 /** Floating Granola-style "ask anything" bar with an expandable answer panel.
- *  meetingId scopes questions to one meeting; null asks across all meetings. */
-export default function ChatDock({ meetingId }: { meetingId: string | null }): React.JSX.Element {
-  const chatKey = chatKeyOf(meetingId)
+ *  meetingId scopes questions to one meeting; otherwise folderId scopes them to
+ *  one folder's notes; with neither set, it asks across all notes. */
+export default function ChatDock({
+  meetingId,
+  folderId = null,
+  folderName
+}: {
+  meetingId: string | null
+  folderId?: string | null
+  folderName?: string
+}): React.JSX.Element {
+  const chatKey = chatKeyOf(meetingId, folderId)
   const [input, setInput] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const open = useChatStore((s) => s.openKey === chatKey)
@@ -13,8 +22,8 @@ export default function ChatDock({ meetingId }: { meetingId: string | null }): R
   const { send, cancel, loadHistory, setOpen } = useChatStore()
 
   useEffect(() => {
-    void loadHistory(meetingId)
-  }, [meetingId, loadHistory])
+    void loadHistory(meetingId, folderId)
+  }, [meetingId, folderId, loadHistory])
 
   // ⌘K focuses the bar, Esc collapses the panel.
   useEffect(() => {
@@ -36,12 +45,19 @@ export default function ChatDock({ meetingId }: { meetingId: string | null }): R
     if (!q || streaming) return
     setInput('')
     setOpen(chatKey)
-    void send(meetingId, q)
+    void send(meetingId, folderId, q)
   }
 
   return (
     <div className="fixed bottom-4 left-1/2 z-40 w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2">
-      {open && <ChatPanel meetingId={meetingId} onClose={() => setOpen(null)} />}
+      {open && (
+        <ChatPanel
+          meetingId={meetingId}
+          folderId={folderId}
+          folderName={folderName}
+          onClose={() => setOpen(null)}
+        />
+      )}
 
       <div className="flex items-center gap-2 rounded-full border border-stone-200 bg-white py-1.5 pr-1.5 pl-4 shadow-lg">
         <span className="shrink-0 text-amber-500" aria-hidden>
@@ -56,7 +72,11 @@ export default function ChatDock({ meetingId }: { meetingId: string | null }): R
           }}
           onFocus={() => setOpen(chatKey)}
           placeholder={
-            meetingId ? 'Ask anything about this meeting…' : 'Ask across all your meetings…'
+            meetingId
+              ? 'Ask anything about this meeting…'
+              : folderId
+                ? `Ask across notes in ${folderName || 'this folder'}…`
+                : 'Ask across all your meetings…'
           }
           className="min-w-0 flex-1 bg-transparent text-sm text-stone-800 placeholder:text-stone-400 focus:outline-none"
         />

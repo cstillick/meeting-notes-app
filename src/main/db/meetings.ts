@@ -9,6 +9,7 @@ interface MeetingRow {
   started_at: number | null
   ended_at: number | null
   status: MeetingStatus
+  folder_id: string | null
   notes_json: string
   enhanced_json: string | null
   enhanced_md: string | null
@@ -23,12 +24,32 @@ function toMeeting(row: MeetingRow): Meeting {
     startedAt: row.started_at,
     endedAt: row.ended_at,
     status: row.status,
+    folderId: row.folder_id,
     notesJson: row.notes_json,
     enhancedJson: row.enhanced_json,
     enhancedMd: row.enhanced_md,
     enhancedAt: row.enhanced_at
   }
 }
+
+type SummaryRow = Pick<
+  MeetingRow,
+  'id' | 'title' | 'created_at' | 'started_at' | 'ended_at' | 'status' | 'folder_id'
+>
+
+function toSummary(r: SummaryRow): MeetingSummary {
+  return {
+    id: r.id,
+    title: r.title,
+    createdAt: r.created_at,
+    startedAt: r.started_at,
+    endedAt: r.ended_at,
+    status: r.status,
+    folderId: r.folder_id
+  }
+}
+
+const SUMMARY_COLS = 'id, title, created_at, started_at, ended_at, status, folder_id'
 
 export function createMeeting(): Meeting {
   const id = randomUUID()
@@ -48,21 +69,17 @@ export function getMeeting(id: string): Meeting | null {
 
 export function listMeetings(): MeetingSummary[] {
   const rows = getDb()
-    .prepare(
-      'SELECT id, title, created_at, started_at, ended_at, status FROM meetings ORDER BY created_at DESC'
-    )
-    .all() as Pick<
-    MeetingRow,
-    'id' | 'title' | 'created_at' | 'started_at' | 'ended_at' | 'status'
-  >[]
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    createdAt: r.created_at,
-    startedAt: r.started_at,
-    endedAt: r.ended_at,
-    status: r.status
-  }))
+    .prepare(`SELECT ${SUMMARY_COLS} FROM meetings ORDER BY created_at DESC`)
+    .all() as unknown as SummaryRow[]
+  return rows.map(toSummary)
+}
+
+/** Notes in one folder, newest first. Used to scope folder chat retrieval. */
+export function listMeetingsInFolder(folderId: string): MeetingSummary[] {
+  const rows = getDb()
+    .prepare(`SELECT ${SUMMARY_COLS} FROM meetings WHERE folder_id = ? ORDER BY created_at DESC`)
+    .all(folderId) as unknown as SummaryRow[]
+  return rows.map(toSummary)
 }
 
 export function updateTitle(id: string, title: string): void {

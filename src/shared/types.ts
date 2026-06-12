@@ -7,6 +7,8 @@ export interface Meeting {
   startedAt: number | null
   endedAt: number | null
   status: MeetingStatus
+  /** Folder this note lives in; null = unfiled (shown under "All notes"). */
+  folderId: string | null
   notesJson: string
   enhancedJson: string | null
   enhancedMd: string | null
@@ -20,6 +22,14 @@ export interface MeetingSummary {
   startedAt: number | null
   endedAt: number | null
   status: MeetingStatus
+  folderId: string | null
+}
+
+/** A named collection of notes. Chat asked from inside a folder only sees its notes. */
+export interface Folder {
+  id: string
+  name: string
+  createdAt: number
 }
 
 export type Channel = 'mic' | 'system'
@@ -59,12 +69,15 @@ export interface RecorderStatus {
 export interface SettingsView {
   deepgramKeySet: boolean
   anthropicKeySet: boolean
+  /** Voyage AI key — optional; enables semantic (vector) retrieval for cross-note chat. */
+  voyageKeySet: boolean
   model: string
 }
 
 export interface SettingsUpdate {
   deepgramKey?: string
   anthropicKey?: string
+  voyageKey?: string
   model?: string
 }
 
@@ -105,6 +118,18 @@ export interface ChatLiveFinal {
 
 export interface ChatSendRequest {
   meetingId: string | null
+  /** When meetingId is null, scopes the cross-note thread to one folder's
+   *  notes. null/undefined = the global thread spanning every note. */
+  folderId?: string | null
   question: string
   liveFinals?: ChatLiveFinal[]
+}
+
+/** Identifies a chat thread. A note's id scopes to that note; otherwise a
+ *  folder id scopes to that folder; otherwise the one global thread. Shared by
+ *  the renderer (store keys, panels) and main (stream routing) so they agree. */
+export function chatKeyFor(meetingId: string | null, folderId?: string | null): string {
+  if (meetingId) return meetingId
+  if (folderId) return `folder:${folderId}`
+  return 'global'
 }
