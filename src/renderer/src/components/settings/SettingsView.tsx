@@ -45,6 +45,7 @@ export default function SettingsView(): React.JSX.Element {
   const [anthropicKey, setAnthropicKey] = useState('')
   const [voyageKey, setVoyageKey] = useState('')
   const [model, setModel] = useState('')
+  const [systemAudioOnly, setSystemAudioOnly] = useState(false)
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
@@ -52,7 +53,10 @@ export default function SettingsView(): React.JSX.Element {
   }, [load])
 
   useEffect(() => {
-    if (settings) setModel(settings.model)
+    if (settings) {
+      setModel(settings.model)
+      setSystemAudioOnly(settings.systemAudioOnly)
+    }
   }, [settings])
 
   async function onSave(): Promise<void> {
@@ -60,7 +64,8 @@ export default function SettingsView(): React.JSX.Element {
       ...(deepgramKey ? { deepgramKey } : {}),
       ...(anthropicKey ? { anthropicKey } : {}),
       ...(voyageKey ? { voyageKey } : {}),
-      model
+      model,
+      systemAudioOnly
     })
     setDeepgramKey('')
     setAnthropicKey('')
@@ -125,6 +130,23 @@ export default function SettingsView(): React.JSX.Element {
             <span className="mt-1 block text-xs text-stone-400">
               {AVAILABLE_MODELS.find((m) => m.id === model)?.hint ??
                 'Used to enhance notes and answer chat questions.'}
+            </span>
+          </label>
+          <label className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              checked={systemAudioOnly}
+              onChange={(e) => setSystemAudioOnly(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-stone-300 text-amber-600 focus:ring-amber-500"
+            />
+            <span>
+              <span className="block text-sm font-medium text-stone-700">
+                Mute microphone (record system audio only)
+              </span>
+              <span className="mt-0.5 block text-xs text-stone-400">
+                Captures only what other participants say — your mic is never opened. Takes effect on
+                the next recording you start.
+              </span>
             </span>
           </label>
           <div className="flex items-center gap-3">

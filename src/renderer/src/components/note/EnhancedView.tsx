@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { UserTextMark } from '../../editor/userTextMark'
 import { markdownToHtml } from '../../editor/markdownToDoc'
+import { registerFlush } from '../../flush'
 
 const PROSE_CLASS =
   'prose prose-stone prose-sm max-w-none focus:outline-none ' +
@@ -42,17 +43,28 @@ export function EnhancedDoc({
     [docJson]
   )
 
-  // Flush any pending save when leaving the note or before a remount
-  useEffect(() => {
-    return () => {
-      if (saveTimer.current) {
-        clearTimeout(saveTimer.current)
-        if (editor) {
-          void window.api.invoke('enhanced:save', meetingId, JSON.stringify(editor.getJSON()))
-        }
-      }
+  const flush = useCallback((): Promise<unknown> | undefined => {
+    if (!saveTimer.current) return undefined
+    clearTimeout(saveTimer.current)
+    saveTimer.current = null
+    if (editor) {
+      return window.api.invoke('enhanced:save', meetingId, JSON.stringify(editor.getJSON()))
     }
+    return undefined
   }, [editor, meetingId])
+
+  // Flush any pending save when leaving the note, on window teardown
+  // (pagehide), and on quit — app.exit skips pagehide, hence the registry.
+  useEffect(() => {
+    const onPagehide = (): void => void flush()
+    window.addEventListener('pagehide', onPagehide)
+    const unregister = registerFlush(flush)
+    return () => {
+      window.removeEventListener('pagehide', onPagehide)
+      unregister()
+      void flush()
+    }
+  }, [flush])
 
   return (
     <div className="enhanced-doc cursor-text" onClick={() => editor?.chain().focus().run()}>
@@ -61,8 +73,9 @@ export function EnhancedDoc({
   )
 }
 
-/** Lightweight live preview while markdown is still streaming in. */
-export function StreamingPreview({ markdown }: { markdown: string }): React.JSX.Element {
+/** Read-only render of markdown that never reached a saved doc — the streaming
+ *  preview and the kept-but-unsaved partial after a failed enhancement. */
+export function MarkdownPreview({ markdown }: { markdown: string }): React.JSX.Element {
   const html = useMemo(() => {
     try {
       return markdownToHtml(markdown)
@@ -71,9 +84,14 @@ export function StreamingPreview({ markdown }: { markdown: string }): React.JSX.
     }
   }, [markdown])
 
+  return <div className={PROSE_CLASS} dangerouslySetInnerHTML={{ __html: html }} />
+}
+
+/** Lightweight live preview while markdown is still streaming in. */
+export function StreamingPreview({ markdown }: { markdown: string }): React.JSX.Element {
   return (
     <div className="enhanced-doc">
-      <div className={PROSE_CLASS} dangerouslySetInnerHTML={{ __html: html }} />
+      <MarkdownPreview markdown={markdown} />
       <span className="mt-2 inline-block h-4 w-2 animate-pulse bg-amber-500" />
     </div>
   )

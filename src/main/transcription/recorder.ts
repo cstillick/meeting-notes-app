@@ -5,9 +5,9 @@
 import { EventEmitter } from 'events'
 import type { Channel, LiveSegment, RecorderStatus } from '@shared/types'
 import { AudioTee } from '../audio/audiotee'
-import { getDeepgramKey } from '../settings'
+import { getDeepgramKey, getSystemAudioOnly } from '../settings'
 import { getMeeting, setEnded, setStarted } from '../db/meetings'
-import { insertSegment } from '../db/transcripts'
+import { getMaxEndMs, insertSegment } from '../db/transcripts'
 import { reindexMeeting } from '../db/search'
 import { DeepgramSession } from './deepgramSession'
 import { MockDeepgramSession } from './mockSession'
@@ -56,6 +56,9 @@ export class Recorder extends EventEmitter<{
 }> {
   private meetingId: string | null = null
   private startedAt = 0
+  /** Timeline baseline for this session: a re-recording starts past the note's
+   *  existing transcript so its segments append instead of restarting at 0. */
+  private baseOffsetMs = 0
   private audiotee: AudioTee | null = null
   private sessions: Partial<Record<Channel, Session>> = {}
   private state: RecorderStatus['state'] = 'idle'
@@ -63,11 +66,19 @@ export class Recorder extends EventEmitter<{
    *  reconnect can move timestamps backwards; clamp to keep order stable. */
   private lastFinalStart: Partial<Record<Channel, number>> = {}
   private suppressor = new EchoSuppressor()
+  /** Capture sources that died mid-recording. Reported on every status emit so
+   *  the renderer can keep the warning up; the state stays 'recording'. */
+  private degraded = new Set<Channel>()
   /** Mic finals are held briefly before persisting: the matching system final
    *  may arrive after the mic copy of an echo, so committing immediately would
    *  require retroactive deletes. Interims still stream instantly. */
   private pendingMicFinals: PendingMicFinal[] = []
   private static readonly MIC_FINAL_HOLD_MS = 3500
+  /** Silent gap inserted between a prior recording and a resumed one. */
+  private static readonly RESUME_GAP_MS = 1000
+  /** How far past the elapsed recording time a final's start may still be
+   *  believable (network lag, clock jitter) before it is treated as broken. */
+  private static readonly TIMESTAMP_SLACK_MS = 60_000
 
   get currentMeetingId(): string | null {
     return this.meetingId
@@ -79,7 +90,30 @@ export class Recorder extends EventEmitter<{
 
   private setState(state: RecorderStatus['state'], detail?: string): void {
     this.state = state
-    this.emit('status', { state, meetingId: this.meetingId, detail })
+    this.emitStatus(state, detail)
+  }
+
+  private emitStatus(state: RecorderStatus['state'], detail?: string): void {
+    const status: RecorderStatus = { state, meetingId: this.meetingId, detail }
+    if (this.degraded.size > 0) status.degraded = [...this.degraded]
+    this.emit('status', status)
+  }
+
+  /** A capture source died. Never an error state: the recording continues on
+   *  whatever still works and the user must be able to stop it and keep that,
+   *  so the state stays as-is and the news rides on the status detail. */
+  private markDegraded(channel: Channel, detail: string): void {
+    if (this.degraded.has(channel)) return
+    this.degraded.add(channel)
+    this.emitStatus(this.state, detail)
+  }
+
+  /** Stamp the meeting on every live segment: the broadcast reaches all
+   *  windows, and a viewer on another note must be able to drop it. */
+  private emitSegment(segment: Omit<LiveSegment, 'meetingId'>): void {
+    const meetingId = this.meetingId
+    if (!meetingId) return
+    this.emit('segment', { ...segment, meetingId })
   }
 
   async start(meetingId: string): Promise<{ ok: boolean; error?: string }> {
@@ -96,15 +130,30 @@ export class Recorder extends EventEmitter<{
 
     this.meetingId = meetingId
     this.lastFinalStart = {}
+    this.degraded.clear()
     this.suppressor.reset()
     this.clearPendingMicFinals()
+    // Resume the transcript past any existing segments: re-recording a note
+    // should append, not overwrite/interleave the earlier session (whose rows
+    // would also collide under idx_segments_unique and be silently dropped).
+    const priorEnd = getMaxEndMs(meetingId)
+    this.baseOffsetMs = priorEnd > 0 ? priorEnd + Recorder.RESUME_GAP_MS : 0
     this.setState('starting')
+    // Every result timestamp is relative to this, and results can land while
+    // the sockets below are still coming up — so it has to be set before the
+    // tap spawns, not after. Left over from the previous meeting (or 0), it
+    // would stamp those early results hours into the future.
+    this.startedAt = Date.now()
 
     try {
+      // "System audio only" mutes the mic: skip its Deepgram session entirely.
+      // The renderer also skips mic capture, so no mic PCM is sent — and
+      // onMicChunk no-ops anyway if a late chunk slips in (sessions.mic is unset).
       const Ctor = USE_MOCK ? MockDeepgramSession : DeepgramSession
-      const mic = new Ctor(apiKey, 'mic')
       const system = new Ctor(apiKey, 'system')
-      this.sessions = { mic, system }
+      this.sessions = getSystemAudioOnly()
+        ? { system }
+        : { mic: new Ctor(apiKey, 'mic'), system }
 
       for (const [channel, session] of Object.entries(this.sessions) as [
         Channel,
@@ -112,6 +161,12 @@ export class Recorder extends EventEmitter<{
       ][]) {
         session.on('result', (r) => this.onResult(channel, r))
         session.on('error', (msg) => this.setState(this.state, msg))
+        // A dead socket fails silently by construction — sendAudio drops every
+        // chunk on a closed connection — so without this the UI would keep
+        // saying "recording" for an hour that produces nothing.
+        if (session instanceof DeepgramSession) {
+          session.on('dead', (msg) => this.markDegraded(channel, msg))
+        }
       }
 
       // Spawn the system-audio tap before awaiting the sockets: the helper
@@ -123,17 +178,15 @@ export class Recorder extends EventEmitter<{
       if (!USE_MOCK) {
         this.audiotee = new AudioTee()
         this.audiotee.on('chunk', (buf) => system.sendAudio(buf))
-        this.audiotee.on('status', (msg) => this.emit('status', {
-          state: this.state,
-          meetingId: this.meetingId,
-          detail: msg
-        }))
+        this.audiotee.on('status', (msg) => this.emitStatus(this.state, msg))
+        this.audiotee.on('exit', ({ terminal }) => {
+          if (terminal) this.markDegraded('system', 'system audio capture stopped')
+        })
         this.audiotee.start()
       }
 
-      await Promise.all([mic.start(), system.start()])
+      await Promise.all(Object.values(this.sessions).map((s) => s.start()))
 
-      this.startedAt = Date.now()
       setStarted(meetingId, this.startedAt)
       this.setState('recording')
       echoLog(`start meeting=${meetingId} build=${buildStamp()}`)
@@ -141,8 +194,11 @@ export class Recorder extends EventEmitter<{
     } catch (err) {
       this.audiotee?.stop()
       this.audiotee = null
-      await this.teardown()
+      // Clear the meeting before flushing: teardown lets the sessions deliver
+      // trailing finals, and a half-started session has no usable startedAt to
+      // stamp them against.
       this.meetingId = null
+      await this.teardown()
       this.setState('error', errorMessage(err))
       this.setState('idle')
       return { ok: false, error: errorMessage(err) }
@@ -166,8 +222,10 @@ export class Recorder extends EventEmitter<{
     }
   ): void {
     if (!this.meetingId) return
-    const startMs = Math.max(0, r.startMs - this.startedAt)
-    const endMs = Math.max(startMs, r.endMs - this.startedAt)
+    // baseOffsetMs continues the timeline past any prior recording on this note;
+    // both channels shift by the same constant, so echo time-matching is intact.
+    const startMs = this.baseOffsetMs + Math.max(0, r.startMs - this.startedAt)
+    const endMs = Math.max(startMs, this.baseOffsetMs + (r.endMs - this.startedAt))
 
     if (channel === 'system') {
       // Every system result (interims too — they arrive seconds early) feeds
@@ -177,7 +235,7 @@ export class Recorder extends EventEmitter<{
       if (r.isFinal) {
         this.commitFinal(channel, r.text, startMs, endMs, r.speaker)
       } else {
-        this.emit('segment', {
+        this.emitSegment({
           channel,
           text: r.text,
           startMs,
@@ -195,7 +253,7 @@ export class Recorder extends EventEmitter<{
       if (this.suppressor.isEcho(r.text, startMs, endMs)) {
         this.emitSuppressed(startMs, endMs, false)
       } else {
-        this.emit('segment', { channel, text: r.text, startMs, endMs, isFinal: false })
+        this.emitSegment({ channel, text: r.text, startMs, endMs, isFinal: false })
       }
       return
     }
@@ -215,7 +273,8 @@ export class Recorder extends EventEmitter<{
     this.pendingMicFinals.push(pending)
   }
 
-  /** Clamp against epoch resets, persist, and emit one final segment. */
+  /** Clamp against epoch resets and broken timestamps, persist, and emit one
+   *  final segment — unless the row was a replay the unique index dropped. */
   private commitFinal(
     channel: Channel,
     text: string,
@@ -224,15 +283,36 @@ export class Recorder extends EventEmitter<{
     speaker?: number
   ): void {
     if (!this.meetingId) return
+    const ceiling = this.timestampCeiling()
+    const broken = startMs > ceiling
+    if (broken) {
+      const shift = startMs - ceiling
+      startMs -= shift
+      endMs -= shift
+    }
     const floor = this.lastFinalStart[channel]
     if (floor !== undefined && startMs < floor) {
       const shift = floor - startMs
       startMs += shift
       endMs += shift
     }
-    this.lastFinalStart[channel] = startMs
-    insertSegment(this.meetingId, channel, text, startMs, endMs, speaker ?? null)
-    this.emit('segment', { channel, text, startMs, endMs, isFinal: true, speaker })
+    // A retransmitted final is dropped by the unique index; emitting it anyway
+    // would show the sentence twice live and once after reload.
+    if (!insertSegment(this.meetingId, channel, text, startMs, endMs, speaker ?? null)) return
+    // A broken timestamp costs one misplaced segment; it must never become the
+    // floor, or every later final on the channel collapses onto it.
+    if (!broken) this.lastFinalStart[channel] = startMs
+    this.emitSegment({ channel, text, startMs, endMs, isFinal: true, speaker })
+  }
+
+  /** No real audio can start after the elapsed recording time; a start that
+   *  does came from a stale epoch anchor and is worth minutes or decades. Such
+   *  a value must never reach lastFinalStart, where it becomes a floor that
+   *  pins every later final on the channel to it and destroys the timeline.
+   *  MOCK_DEEPGRAM's synthetic clock deliberately outruns the wall clock. */
+  private timestampCeiling(): number {
+    if (USE_MOCK) return Infinity
+    return this.baseOffsetMs + (Date.now() - this.startedAt) + Recorder.TIMESTAMP_SLACK_MS
   }
 
   /** isEcho, with the decision logged to echo-debug.log (and stdout under ECHO_DEBUG=1). */
@@ -257,7 +337,7 @@ export class Recorder extends EventEmitter<{
 
   /** Tell the renderer to clear the live mic bubble for an echo. */
   private emitSuppressed(startMs: number, endMs: number, isFinal: boolean): void {
-    this.emit('segment', { channel: 'mic', text: '', startMs, endMs, isFinal, suppressed: true })
+    this.emitSegment({ channel: 'mic', text: '', startMs, endMs, isFinal, suppressed: true })
   }
 
   private flushMicFinal(pending: PendingMicFinal): void {
@@ -320,6 +400,7 @@ export class Recorder extends EventEmitter<{
       reindexMeeting(meetingId)
     }
     this.meetingId = null
+    this.degraded.clear()
     this.setState('idle')
   }
 

@@ -17,7 +17,9 @@ export function buildStamp(): string {
   return `${__BUILD_INFO__.commit} built ${__BUILD_INFO__.time}`
 }
 
-export function echoLog(line: string): void {
+/** App-wide diagnostic line, tagged by subsystem. Same file as the echo log so
+ *  crash context and suppression decisions interleave in one timeline. */
+export function appLog(scope: string, line: string): void {
   try {
     if (!logPath) {
       logPath = join(app.getPath('userData'), 'echo-debug.log')
@@ -28,8 +30,12 @@ export function echoLog(line: string): void {
         // first run — no log yet
       }
     }
-    appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`)
+    appendFileSync(logPath, `${new Date().toISOString()} [${scope}] ${line}\n`)
   } catch {
     // diagnostics must never break recording
   }
+}
+
+export function echoLog(line: string): void {
+  appLog('echo', line)
 }

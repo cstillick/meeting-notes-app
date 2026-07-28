@@ -22,8 +22,8 @@ export default function ChatDock({
   const { send, cancel, loadHistory, setOpen } = useChatStore()
 
   useEffect(() => {
-    void loadHistory(meetingId, folderId)
-  }, [meetingId, folderId, loadHistory])
+    void loadHistory(chatKey)
+  }, [chatKey, loadHistory])
 
   // ⌘K focuses the bar, Esc collapses the panel.
   useEffect(() => {
@@ -85,7 +85,7 @@ export default function ChatDock({
         </kbd>
         {streaming ? (
           <button
-            onClick={() => cancel(meetingId)}
+            onClick={() => cancel(chatKey)}
             title="Stop answering"
             className="shrink-0 rounded-full bg-stone-200 px-3 py-1.5 text-xs font-medium text-stone-600 hover:bg-stone-300"
           >

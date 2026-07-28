@@ -49,19 +49,19 @@ for (const c of CASES) {
   try {
     reindexMeeting(m.id)
   } catch (e) {
-    outcome = `THREW: ${(e as Error).message}`
+    outcome = `reindex THREW: ${(e as Error).message}`
   }
   const ms = Date.now() - t0
-  let searchNote = ''
   if (c.searchable && outcome === 'ok') {
     try {
       const hits = searchMeetings(c.searchable)
-      searchNote = hits.some((h) => h.id === m.id) ? '(indexed text found)' : '(text NOT in index)'
+      if (!hits.some((h) => h.id === m.id)) outcome = `"${c.searchable}" NOT in index`
     } catch (e) {
-      searchNote = `(search threw: ${(e as Error).message})`
+      outcome = `search THREW: ${(e as Error).message}`
     }
   }
-  console.log(`  ${outcome === 'ok' ? 'ok   ' : 'FAIL '} ${c.name} [${ms}ms] ${searchNote} ${outcome !== 'ok' ? outcome : ''}`)
+  const found = c.searchable ? ', indexed text found' : ''
+  result(c.name, outcome === 'ok', `${ms}ms${outcome === 'ok' ? found : `, ${outcome}`}`)
 }
 
 header('Sanity: search still works afterwards')

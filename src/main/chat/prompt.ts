@@ -1,5 +1,5 @@
 import type { ChatLiveFinal, Meeting, MeetingSummary } from '@shared/types'
-import { formatTranscript, pmToPlainText, type TranscriptLine } from '../enhance/prompt'
+import { fitTranscript, MAX_NOTES_CHARS, pmToPlainText, type TranscriptLine } from '../enhance/prompt'
 import { getDb } from '../db/database'
 import { listMeetings, listMeetingsInFolder } from '../db/meetings'
 import { searchMeetingIdsForChat } from '../db/search'
@@ -17,12 +17,12 @@ export const CHAT_MEETING_SYSTEM = `You are a meeting assistant. Answer question
 export const CHAT_GLOBAL_SYSTEM = `You are an assistant for the user's personal library of meeting notes. Answer using ONLY the meeting excerpts provided in the user's message. Each excerpt is labeled with the meeting's title and date.
 - Answer directly and concisely in Markdown. Lead with the answer. Use bullets for lists and bold for key facts, dates, and numbers.
 - When your answer draws on a meeting, name it inline, e.g. (Design sync — Jun 3).
-- A full index of every meeting (title and date only) is also provided. If the excerpts don't contain the answer but the index suggests a likely meeting, say which meeting probably has it and suggest opening that meeting and asking there. Never invent content for meetings whose excerpts were not provided.`
+- An index of the user's meetings (title and date only) is also provided; on a large library it lists only the most recent ones and says how many are omitted. If the excerpts don't contain the answer but the index suggests a likely meeting, say which meeting probably has it and suggest opening that meeting and asking there. Never invent content for meetings whose excerpts were not provided.`
 
 export const CHAT_FOLDER_SYSTEM = `You are an assistant for one folder of the user's meeting notes. The user's message names the folder and contains ONLY notes from that folder — answer using only those excerpts, and treat notes outside this folder as out of scope.
 - Answer directly and concisely in Markdown. Lead with the answer. Use bullets for lists and bold for key facts, dates, and numbers.
 - When your answer draws on a meeting, name it inline, e.g. (Design sync — Jun 3).
-- A full index of the folder's meetings (title and date only) is also provided. If the excerpts don't contain the answer but the index suggests a likely meeting in this folder, say which one probably has it and suggest opening it. Never invent content, and never reference meetings outside this folder.`
+- An index of the folder's meetings (title and date only) is also provided; on a large folder it lists only the most recent ones and says how many are omitted. If the excerpts don't contain the answer but the index suggests a likely meeting in this folder, say which one probably has it and suggest opening it. Never invent content, and never reference meetings outside this folder.`
 
 function formatWhen(ts: number | null): string {
   if (!ts) return 'unknown time'
@@ -35,48 +35,26 @@ function formatWhen(ts: number | null): string {
   })
 }
 
-// Context-window guard for the per-meeting path. All selectable models have a
-// 200K-token window; at a conservative ~3.5 chars/token, 500K chars ≈ 143K
-// tokens, leaving ample room for the system prompt, 40 turns of history, and
-// the answer. Without this, a marathon recording 400s the API with
-// "prompt too long" instead of degrading.
-const MAX_MEETING_CONTEXT_CHARS = 500_000
-const MAX_NOTES_CHARS = 150_000
 const MAX_ENHANCED_CHARS = 100_000
-/** Per-line formatting overhead: "[m:ss] [Speaker N] " + newline. */
-const TRANSCRIPT_LINE_OVERHEAD = 24
-
-/** Newest transcript lines that fit the budget. Trimming drops the oldest
- *  lines first: "what did they just say" questions outnumber ones about a
- *  9-hour-old opening remark, and live chat always concerns the tail. */
-function fitTranscript(lines: TranscriptLine[], budget: number): { text: string; note: string } {
-  let total = 0
-  let start = lines.length
-  while (start > 0 && total + lines[start - 1].text.length + TRANSCRIPT_LINE_OVERHEAD <= budget) {
-    total += lines[start - 1].text.length + TRANSCRIPT_LINE_OVERHEAD
-    start--
-  }
-  if (start === 0) return { text: formatTranscript(lines), note: '' }
-  return {
-    text: formatTranscript(lines.slice(start)),
-    note: `[Transcript trimmed to fit the context window: the earliest ${start} of ${lines.length} lines are omitted; the transcript below starts partway through the meeting.]\n`
-  }
-}
 
 /** Per-meeting context — sent as a second (cacheable) system block. */
 export function buildMeetingContext(args: {
   meeting: Meeting
   segments: TranscriptLine[]
   liveFinals?: ChatLiveFinal[]
+  /** Chars this block may spend: the model's whole request budget minus the
+   *  system prompt and the replayed history, so the transcript is trimmed
+   *  against what is actually left rather than a fixed constant. */
+  budget: number
 }): string {
-  const { meeting } = args
+  const { meeting, budget } = args
   const lines = args.liveFinals ?? args.segments
-  const notes = pmToPlainText(meeting.notesJson).slice(0, MAX_NOTES_CHARS)
-  const enhanced = (meeting.enhancedMd ?? '').slice(0, MAX_ENHANCED_CHARS)
-  const transcript = fitTranscript(
-    lines,
-    MAX_MEETING_CONTEXT_CHARS - notes.length - enhanced.length
+  const notes = pmToPlainText(meeting.notesJson).slice(0, Math.min(MAX_NOTES_CHARS, budget))
+  const enhanced = (meeting.enhancedMd ?? '').slice(
+    0,
+    Math.max(0, Math.min(MAX_ENHANCED_CHARS, budget - notes.length))
   )
+  const transcript = fitTranscript(lines, Math.max(0, budget - notes.length - enhanced.length))
   return `Meeting: ${meeting.title || 'Untitled meeting'}
 When: ${formatWhen(meeting.startedAt ?? meeting.createdAt)}
 Status: ${meeting.status === 'recording' ? 'IN PROGRESS (live)' : 'ended'}
@@ -136,23 +114,34 @@ function chunkExcerpt(hits: ChunkHit[]): string {
 }
 
 const VECTOR_TOP_K = 24
+/** Meetings listed in <meeting_index>, newest first. One line is ~45 chars, so
+ *  300 lines ≈ 13K chars; uncapped, a 5,000-note library would emit ~64K tokens
+ *  of index on every single turn. */
+const MAX_INDEX_MEETINGS = 300
 
-/** Retrieval context over a set of notes, prepended to the user turn. Hybrid:
- *  BM25 keyword rank (exact names, jargon) fused with vector-chunk rank
- *  (paraphrase, semantics) via RRF, plus recent notes and a full index of the
- *  set so the model can redirect to notes whose excerpts weren't included. The
- *  candidate set (`all`) is the only scope the model ever sees — passing a
- *  folder's notes here is what keeps folder chat from leaking other folders. */
+/** Retrieval context over a set of notes. Split in two so the caller can cache
+ *  the stable half: `system` carries the folder name and the meeting index —
+ *  identical across turns of a thread — while `userTurn` carries the volatile
+ *  excerpts and the question. */
+export interface LibraryContext {
+  system: string
+  userTurn: string
+}
+
+/** Retrieval context over a set of notes. Hybrid: BM25 keyword rank (exact
+ *  names, jargon) fused with vector-chunk rank (paraphrase, semantics) via RRF,
+ *  plus recent notes and an index of the set so the model can redirect to notes
+ *  whose excerpts weren't included. The candidate set (`all`) is the only scope
+ *  the model ever sees — passing a folder's notes here is what keeps folder
+ *  chat from leaking other folders. */
 async function buildLibraryContext(
   question: string,
   all: MeetingSummary[],
   header: string,
-  folderId: string | null
-): Promise<string> {
+  folderId: string | null,
+  budget: number
+): Promise<LibraryContext> {
   const allowed = new Set(all.map((m) => m.id))
-  const index = all
-    .map((m) => `- ${m.title || 'Untitled meeting'} — ${shortDate(m.createdAt)} (${m.status})`)
-    .join('\n')
 
   // FTS ranks across every note; restrict to the allowed set before fusing.
   const bm25Ids = searchMeetingIdsForChat(question).filter((id) => allowed.has(id))
@@ -173,48 +162,75 @@ async function buildLibraryContext(
   const recent = all.slice(0, RECENT_MEETINGS).map((m) => m.id)
   const selected = [...new Set([...ranked, ...recent])]
 
+  // The newest N, plus everything an excerpt was built for so the model can
+  // always name what it was shown. The omission count keeps it from concluding
+  // a note doesn't exist just because the index stopped short.
+  const listed = new Set(all.slice(0, MAX_INDEX_MEETINGS).map((m) => m.id))
+  for (const id of selected) listed.add(id)
+  const indexLines = all
+    .filter((m) => listed.has(m.id))
+    .map((m) => `- ${m.title || 'Untitled meeting'} — ${shortDate(m.createdAt)} (${m.status})`)
+  const omitted = all.length - indexLines.length
+  if (omitted > 0) indexLines.push(`(… and ${omitted} older notes not listed)`)
+  const index = indexLines.join('\n') || '(no meetings yet)'
+
+  const excerptBudget = Math.min(MAX_TOTAL_CHARS, Math.max(0, budget - index.length))
   const byId = new Map(all.map((m) => [m.id, m]))
   const excerpts: string[] = []
   let total = 0
   for (const id of selected) {
     const summary = byId.get(id)
     if (!summary) continue
-    const hits = hitsByMeeting.get(id)
-    const text = hits ? chunkExcerpt(hits) : meetingExcerpt(id)
+    const text = excerptFor(id, hitsByMeeting.get(id))
     if (!text) continue
-    if (total + text.length > MAX_TOTAL_CHARS) break
+    if (total + text.length > excerptBudget) break
     total += text.length
     excerpts.push(
       `<meeting title="${(summary.title || 'Untitled meeting').replace(/"/g, "'")}" date="${shortDate(summary.createdAt)}">\n${text}\n</meeting>`
     )
   }
 
-  return `${header}<meeting_index>
-${index || '(no meetings yet)'}
-</meeting_index>
-
-<meetings>
+  return {
+    system: `${header}<meeting_index>
+${index}
+</meeting_index>`,
+    userTurn: `<meetings>
 ${excerpts.join('\n') || '(no meeting content available)'}
 </meetings>
 
 Question: ${question}`
+  }
+}
+
+/** Vector hits first (the matched passage can live anywhere in a long note),
+ *  then as much of the head-of-note excerpt as still fits. Combining rather
+ *  than choosing matters because a single weak chunk hit used to *replace* up
+ *  to MAX_EXCERPT_CHARS of enhanced notes — so adding a Voyage key could make
+ *  the context shallower than keyword-only retrieval. */
+function excerptFor(meetingId: string, hits: ChunkHit[] | undefined): string {
+  const chunks = hits ? chunkExcerpt(hits) : ''
+  const room = MAX_EXCERPT_CHARS - chunks.length
+  const summary = room > 0 ? meetingExcerpt(meetingId).slice(0, room) : ''
+  return [chunks, summary].filter(Boolean).join('\n[…]\n')
 }
 
 /** Cross-meeting context for the global thread (every note). */
-export function buildGlobalContext(question: string): Promise<string> {
-  return buildLibraryContext(question, listMeetings(), '', null)
+export function buildGlobalContext(question: string, budget: number): Promise<LibraryContext> {
+  return buildLibraryContext(question, listMeetings(), '', null, budget)
 }
 
 /** Context for a folder thread — restricted to that folder's notes only. */
 export function buildFolderContext(
   question: string,
   folderId: string,
-  folderName: string
-): Promise<string> {
+  folderName: string,
+  budget: number
+): Promise<LibraryContext> {
   return buildLibraryContext(
     question,
     listMeetingsInFolder(folderId),
     `Folder: ${folderName || 'Untitled folder'}\n\n`,
-    folderId
+    folderId,
+    budget
   )
 }

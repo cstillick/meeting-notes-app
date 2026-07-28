@@ -4,7 +4,11 @@ directories:
   output: dist
   buildResources: build
 files:
-  - out/**
+  # Narrowed to the three bundles; out/** also swept in the typecheck projects'
+  # .tsbuildinfo output. Keep scripts/verify-package.mjs ROOTS in sync.
+  - out/main/**
+  - out/preload/**
+  - out/renderer/**
 extraResources:
   - from: resources/bin
     to: bin

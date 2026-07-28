@@ -5,11 +5,14 @@
   "main": "./out/main/index.js",
   "author": "Cooper Stillick",
   "private": true,
+  "engines": {
+    "node": ">=22.6"
+  },
   "scripts": {
     "dev": "electron-vite dev --watch",
     "build": "electron-vite build && electron-builder && node scripts/verify-package.mjs",
     "start": "electron-vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.scripts.json",
     "stress": "node scripts/stress/run-all.mjs",
     "check": "npm run typecheck && npm run stress",
     "fix-electron-plist": "node scripts/fix-electron-plist.mjs"

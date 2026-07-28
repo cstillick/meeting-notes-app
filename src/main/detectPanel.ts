@@ -2,27 +2,18 @@
 // because system notifications are unreliable for ad-hoc-signed apps (macOS
 // silently drops them — Notification Center never registers the app). Shown
 // in the top-right corner, over fullscreen meeting apps, without stealing
-// focus. Buttons talk back over the regular preload bridge ('detect:action').
+// focus. Buttons talk back over a panel-only bridge ('detect:action').
 import { BrowserWindow, screen } from 'electron'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 
-const PANEL_HTML = `<!doctype html><meta charset="utf-8">
-<style>
-  html,body{margin:0;background:transparent;font:13px -apple-system,sans-serif;-webkit-user-select:none;overflow:hidden}
-  .wrap{display:flex;align-items:center;gap:10px;height:100vh;padding:0 8px 0 14px;background:#fff;
-    border:1px solid #e7e5e4;border-radius:12px;box-sizing:border-box}
-  .msg{color:#44403c;flex:1;white-space:nowrap}
-  button{font:inherit;border:0;border-radius:6px;padding:6px 10px;cursor:pointer;background:transparent}
-  .start{background:#d97706;color:#fff;font-weight:600}
-  .start:hover{background:#b45309}
-  .dismiss{color:#a8a29e;padding:6px 8px}
-  .dismiss:hover{color:#57534e}
-</style>
-<div class="wrap">
-  <span class="msg">Meeting detected &mdash; take notes?</span>
-  <button class="start" onclick="window.api.invoke('detect:action','start')">Start recording</button>
-  <button class="dismiss" onclick="window.api.invoke('detect:action','dismiss')" title="Dismiss">&#10005;</button>
-</div>`
+const PANEL_HTML = join(__dirname, '../preload/detectPanel.html')
+
+/** The panel's document URL, so navigation and IPC-sender checks recognise it
+ *  as one of the app's own. */
+export function getDetectPanelUrl(): string {
+  return pathToFileURL(PANEL_HTML).href
+}
 
 let panel: BrowserWindow | null = null
 
@@ -49,7 +40,7 @@ export function showDetectPanel(): void {
     focusable: false,
     acceptFirstMouse: true,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(__dirname, '../preload/detectPanel.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
@@ -61,7 +52,7 @@ export function showDetectPanel(): void {
   panel.on('closed', () => {
     panel = null
   })
-  void panel.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(PANEL_HTML))
+  void panel.loadFile(PANEL_HTML)
   // showInactive: never steal focus from the meeting the user just joined.
   panel.once('ready-to-show', () => panel?.showInactive())
 }

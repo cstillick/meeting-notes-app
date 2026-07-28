@@ -1,7 +1,13 @@
 import { app, safeStorage } from 'electron'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
-import { DEFAULT_MODEL, type SettingsUpdate, type SettingsView } from '@shared/types'
+import {
+  DEFAULT_MODEL,
+  modelCapabilities,
+  type ModelOption,
+  type SettingsUpdate,
+  type SettingsView
+} from '@shared/types'
 
 interface StoredSettings {
   /** base64 of safeStorage-encrypted key, or null */
@@ -9,13 +15,16 @@ interface StoredSettings {
   anthropicKeyEnc: string | null
   voyageKeyEnc: string | null
   model: string
+  /** Record system audio only — skip the microphone entirely. */
+  systemAudioOnly: boolean
 }
 
 const DEFAULTS: StoredSettings = {
   deepgramKeyEnc: null,
   anthropicKeyEnc: null,
   voyageKeyEnc: null,
-  model: DEFAULT_MODEL
+  model: DEFAULT_MODEL,
+  systemAudioOnly: false
 }
 
 function settingsPath(): string {
@@ -66,7 +75,8 @@ export function getSettingsView(): SettingsView {
     deepgramKeySet: s.deepgramKeyEnc !== null,
     anthropicKeySet: s.anthropicKeyEnc !== null,
     voyageKeySet: s.voyageKeyEnc !== null,
-    model: s.model
+    model: s.model,
+    systemAudioOnly: s.systemAudioOnly
   }
 }
 
@@ -86,6 +96,9 @@ export function updateSettings(update: SettingsUpdate): SettingsView {
   }
   if (update.model !== undefined && update.model.trim()) {
     s.model = update.model.trim()
+  }
+  if (update.systemAudioOnly !== undefined) {
+    s.systemAudioOnly = update.systemAudioOnly
   }
   persist(s)
   return getSettingsView()
@@ -107,4 +120,17 @@ export function getVoyageKey(): string | null {
 
 export function getModel(): string {
   return load().model
+}
+
+/** Capabilities of the selected model. Every Anthropic request derives its
+ *  shape (thinking config) and its context budget from this one call, so the
+ *  chat and enhance paths can never disagree about what the model accepts.
+ *  `.id` is the model string to send — for a custom model it is what the user
+ *  stored, verbatim. */
+export function getModelCapabilities(): ModelOption {
+  return modelCapabilities(getModel())
+}
+
+export function getSystemAudioOnly(): boolean {
+  return load().systemAudioOnly
 }

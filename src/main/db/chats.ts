@@ -31,7 +31,10 @@ function scopeClause(
   return { where: 'meeting_id IS NULL AND folder_id IS NULL', params: [] }
 }
 
-/** Last `limit` messages of a thread, oldest first. Both ids null = global. */
+/** Last `limit` messages of a thread, oldest first. Both ids null = global.
+ *  Blank rows are skipped rather than replayed: an assistant turn stored as ''
+ *  (a refusal saved before stop_reason was checked) makes every later send on
+ *  that thread 400 — the API rejects empty message content. */
 export function getChatHistory(
   meetingId: string | null,
   folderId: string | null,
@@ -39,7 +42,9 @@ export function getChatHistory(
 ): ChatMessage[] {
   const { where, params } = scopeClause(meetingId, folderId)
   const rows = getDb()
-    .prepare(`SELECT * FROM chat_messages WHERE ${where} ORDER BY id DESC LIMIT ?`)
+    .prepare(
+      `SELECT * FROM chat_messages WHERE ${where} AND TRIM(content) <> '' ORDER BY id DESC LIMIT ?`
+    )
     .all(...params, limit) as unknown as ChatRow[]
   return rows.reverse().map(toMessage)
 }

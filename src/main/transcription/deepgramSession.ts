@@ -35,6 +35,9 @@ function meanConfidence(words: ResultWord[]): number | undefined {
 }
 
 const KEEPALIVE_MS = 5000
+// How long the SDK's ReconnectingWebSocket gets to come back after an
+// unexpected close before the connection counts as dead.
+const RECONNECT_GRACE_MS = 10_000
 // WebSocket.OPEN
 const OPEN = 1
 
@@ -42,6 +45,8 @@ export class DeepgramSession extends EventEmitter<{
   result: [SessionResult]
   error: [string]
   closed: []
+  /** The connection is gone for good — every chunk from here on is discarded. */
+  dead: [string]
 }> {
   private socket: V1Socket | null = null
   private connEpoch = 0
@@ -49,6 +54,9 @@ export class DeepgramSession extends EventEmitter<{
   private lastSentAt = 0
   private keepAliveTimer: NodeJS.Timeout | null = null
   private closingResolve: (() => void) | null = null
+  private stopping = false
+  private isDead = false
+  private keepAliveStrikes = 0
 
   constructor(
     private apiKey: string,
@@ -58,6 +66,9 @@ export class DeepgramSession extends EventEmitter<{
   }
 
   async start(): Promise<void> {
+    this.stopping = false
+    this.isDead = false
+    this.keepAliveStrikes = 0
     const client = new DeepgramClient({ apiKey: this.apiKey })
     const socket = await client.listen.v1.connect({
       model: 'nova-3',
@@ -128,6 +139,15 @@ export class DeepgramSession extends EventEmitter<{
     socket.on('close', () => {
       this.closingResolve?.()
       this.emit('closed')
+      if (this.stopping) return
+      // A close is not automatically fatal — the SDK reconnects — except on
+      // code 1000, where it disables reconnection permanently and the socket
+      // reports CLOSED forever while sendAudio silently drops every chunk.
+      setTimeout(() => {
+        if (this.socket === socket && socket.readyState !== OPEN) {
+          this.markDead('connection closed and did not reconnect')
+        }
+      }, RECONNECT_GRACE_MS)
     })
 
     socket.connect()
@@ -143,11 +163,23 @@ export class DeepgramSession extends EventEmitter<{
       if (this.socket && Date.now() - this.lastSentAt > KEEPALIVE_MS) {
         try {
           this.socket.sendKeepAlive({ type: 'KeepAlive' })
+          this.keepAliveStrikes = 0
         } catch {
-          // socket mid-reconnect; ReconnectingWebSocket will recover
+          // One throw is a socket mid-reconnect; ReconnectingWebSocket recovers
+          // from those. Two in a row means it has given up, and this is the only
+          // recurring code path that touches the socket — nothing else would
+          // ever notice, since sendAudio returns quietly on a closed one.
+          this.keepAliveStrikes += 1
+          if (this.keepAliveStrikes >= 2) this.markDead('transcription connection lost')
         }
       }
     }, KEEPALIVE_MS)
+  }
+
+  private markDead(reason: string): void {
+    if (this.isDead || this.stopping) return
+    this.isDead = true
+    this.emit('dead', `${this.label}: ${reason}`)
   }
 
   /** Group consecutive words sharing a speaker index into one segment each. */
@@ -203,6 +235,9 @@ export class DeepgramSession extends EventEmitter<{
 
   /** Flush remaining finals and close. Resolves when the server closes (or after a timeout). */
   async stop(): Promise<void> {
+    // Set before anything closes: teardown closes the socket on purpose and
+    // must not be reported as a dead connection.
+    this.stopping = true
     if (this.keepAliveTimer) {
       clearInterval(this.keepAliveTimer)
       this.keepAliveTimer = null

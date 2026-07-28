@@ -1,10 +1,16 @@
-import { BrowserWindow, Notification, app, ipcMain } from 'electron'
+import { Notification, app, ipcMain } from 'electron'
 import type { EventMap, InvokeMap } from '@shared/ipc'
+import { getMainWindow, isAppDocument, showMainWindow } from './index'
 import { getSettingsView, updateSettings } from './settings'
 import { recorder } from './transcription/recorder'
 import { enhancer } from './enhance/enhancer'
 import { MicMonitor } from './audio/micMonitor'
 import { closeDetectPanel, showDetectPanel } from './detectPanel'
+
+// The worklet emits ~50 ms of 16 kHz s16le mono (~1.6 KB); the cap is generous
+// headroom, not a tight bound, and only exists to keep a runaway renderer from
+// pushing arbitrarily large buffers down the app's highest-frequency channel.
+const MAX_PCM_CHUNK_BYTES = 64 * 1024
 
 let micMonitor: MicMonitor | null = null
 
@@ -29,29 +35,72 @@ import {
   setMeetingFolder
 } from './db/folders'
 import { getSegments } from './db/transcripts'
+import { appLog } from './transcription/debugLog'
 import { clearChat, getChatHistory } from './db/chats'
-import { pmToText, reindexMeeting, searchMeetings } from './db/search'
+import { reindexMeeting, searchMeetings } from './db/search'
+import { pmToPlainText } from './enhance/prompt'
 import { chatService } from './chat/chatService'
 import { initEmbedder, scheduleEmbed } from './embeddings/embedder'
+
+/** The preload bridge is injected into whatever document a window ends up
+ *  holding, so the channel allowlist alone is not a boundary: a frame that is
+ *  not one of ours (a hostile navigation, a remote subframe) must not reach a
+ *  handler at all. */
+function fromAppDocument(event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): boolean {
+  try {
+    // Reading a disposed frame throws; that call is not from a live app
+    // document either way, and mic:pcm has no promise to reject into.
+    const url = event.senderFrame?.url
+    return typeof url === 'string' && isAppDocument(url)
+  } catch {
+    return false
+  }
+}
 
 /** Typed ipcMain.handle wrapper tying handlers to the shared contract. */
 export function handle<K extends keyof InvokeMap>(
   channel: K,
-  handler: (...args: Parameters<InvokeMap[K]>) => ReturnType<InvokeMap[K]>
+  handler: (
+    ...args: Parameters<InvokeMap[K]>
+  ) => ReturnType<InvokeMap[K]> | Promise<Awaited<ReturnType<InvokeMap[K]>>>
 ): void {
-  ipcMain.handle(channel, (_event, ...args) =>
-    handler(...(args as Parameters<InvokeMap[K]>))
-  )
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!fromAppDocument(event)) throw new Error(`ipc: ${channel} from an untrusted frame`)
+    return handler(...(args as Parameters<InvokeMap[K]>))
+  })
 }
 
-/** Broadcast a typed event to all renderer windows. */
+/** Send a typed event to the main window. Never to every window: auxiliary
+ *  windows (the detect panel) would receive transcript and chat payloads they
+ *  have no use for. */
 export function broadcast<K extends keyof EventMap>(
   channel: K,
   ...args: Parameters<EventMap[K]>
 ): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(channel, ...args)
-  }
+  getMainWindow()?.webContents.send(channel, ...args)
+}
+
+let flushAck: (() => void) | null = null
+
+/** Give the renderer a chance to write its debounced editor saves before the
+ *  DB closes. app.exit skips pagehide, so quitting without this loses up to
+ *  750 ms of note/title/enhanced edits. Bounded: a hung or closed renderer
+ *  must never block quit. */
+export function flushRenderers(timeoutMs: number): Promise<void> {
+  const win = getMainWindow()
+  if (!win || win.webContents.isDestroyed()) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      flushAck = null
+      resolve()
+    }, timeoutMs)
+    flushAck = () => {
+      clearTimeout(timer)
+      flushAck = null
+      resolve()
+    }
+    broadcast('app:will-quit')
+  })
 }
 
 export function registerIpc(): void {
@@ -97,7 +146,9 @@ export function registerIpc(): void {
   })
 
   handle('enhanced:save', (id, enhancedJson) => {
-    saveEnhancedEdit(id, enhancedJson, pmToText(enhancedJson))
+    // Line-structured, not flattened: chunking and excerpts read enhanced_md as
+    // markdown, and a manual edit must not destroy that structure.
+    saveEnhancedEdit(id, enhancedJson, pmToPlainText(enhancedJson))
     reindexMeeting(id)
   })
 
@@ -106,7 +157,8 @@ export function registerIpc(): void {
   // Dev-only diagnostic: verify stored keys against provider auth endpoints
   // without exposing key material. From DevTools: await window.api.invoke('debug:checkKeys')
   if (process.env['ELECTRON_RENDERER_URL']) {
-    ipcMain.handle('debug:checkKeys', async () => {
+    ipcMain.handle('debug:checkKeys', async (event) => {
+      if (!fromAppDocument(event)) throw new Error('ipc: debug:checkKeys from an untrusted frame')
       const { getDeepgramKey, getAnthropicKey } = await import('./settings')
       const dg = getDeepgramKey()
       const an = getAnthropicKey()
@@ -124,8 +176,8 @@ export function registerIpc(): void {
     })
   }
 
-  ipcMain.handle('recorder:start', (_e, meetingId: string) => recorder.start(meetingId))
-  ipcMain.handle('recorder:stop', () => recorder.stop())
+  handle('recorder:start', (meetingId) => recorder.start(meetingId))
+  handle('recorder:stop', () => recorder.stop())
 
   handle('enhance:start', (meetingId) => enhancer.start(meetingId))
   handle('enhance:cancel', () => enhancer.cancel())
@@ -139,12 +191,41 @@ export function registerIpc(): void {
   handle('chat:cancel', (chatKey) => chatService.cancel(chatKey))
   handle('chat:clear', (meetingId, folderId) => clearChat(meetingId, folderId))
 
+  handle('app:flushed', () => {
+    flushAck?.()
+  })
+
+  // Fire-and-forget like mic:pcm: a throw here has no promise to reject into.
+  ipcMain.on('log:error', (event, line: unknown) => {
+    if (!fromAppDocument(event)) return
+    if (typeof line !== 'string' || line.length === 0) return
+    appLog('renderer', line.slice(0, 4000))
+  })
+
   chatService.on('delta', (d) => broadcast('chat:delta', d))
   chatService.on('done', (d) => broadcast('chat:done', d))
   chatService.on('error', (d) => broadcast('chat:error', d))
 
-  ipcMain.on('mic:pcm', (_e, chunk: ArrayBuffer) => {
-    recorder.onMicChunk(Buffer.from(chunk))
+  // The only ipcMain.on in the app, and the only place a renderer argument
+  // reaches native code: the ArrayBuffer annotation is erased, and a throw here
+  // has no promise to reject into — it would take down main.
+  ipcMain.on('mic:pcm', (event, chunk: unknown) => {
+    if (!fromAppDocument(event)) return
+    try {
+      const buf =
+        chunk instanceof ArrayBuffer
+          ? Buffer.from(chunk)
+          : ArrayBuffer.isView(chunk)
+            ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+            : null
+      if (!buf || buf.byteLength === 0 || buf.byteLength > MAX_PCM_CHUNK_BYTES) {
+        console.warn('ipc: dropped mic:pcm chunk')
+        return
+      }
+      recorder.onMicChunk(buf)
+    } catch (err) {
+      console.error('ipc: dropped malformed mic:pcm chunk', err)
+    }
   })
 
   recorder.on('segment', (segment) => broadcast('transcript:segment', segment))
@@ -169,7 +250,6 @@ export function registerIpc(): void {
 
   const startFromDetection = (): void => {
     void (async () => {
-      const { getMainWindow, showMainWindow } = await import('./index')
       const existing = getMainWindow()
       if (existing) {
         await showMainWindow()

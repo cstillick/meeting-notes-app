@@ -8,26 +8,14 @@
 // Run: STRESS_USERDATA_DIR=$(mktemp -d) node --experimental-transform-types --import ./scripts/stress/_register.mjs scripts/stress/echo-leak-repro.ts
 import { createMeeting } from '../../src/main/db/meetings.ts'
 import { getSegments } from '../../src/main/db/transcripts.ts'
-import { Recorder } from '../../src/main/transcription/recorder.ts'
 import { EchoSuppressor } from '../../src/main/transcription/echoSuppressor.ts'
+import { attachRecorder } from './_recorder.ts'
 import { header, result } from './_util.ts'
-
-type TestRecorder = {
-  meetingId: string | null
-  startedAt: number
-  onResult: (
-    ch: 'mic' | 'system',
-    r: { text: string; startMs: number; endMs: number; isFinal: boolean; speaker?: number }
-  ) => void
-  flushPendingMicFinals: () => void
-}
 
 header('Pass A replay: all system entries observed before mic flush')
 {
   const m = createMeeting()
-  const rec = new Recorder() as unknown as TestRecorder
-  rec.meetingId = m.id
-  rec.startedAt = 0
+  const rec = attachRecorder(m.id)
 
   const seq: Array<['mic' | 'system', string, number, number]> = [
     ['mic', 'This is Cooper, and this is a test.', 368, 3098],

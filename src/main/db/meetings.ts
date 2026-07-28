@@ -67,10 +67,19 @@ export function getMeeting(id: string): Meeting | null {
   return row ? toMeeting(row) : null
 }
 
-export function listMeetings(): MeetingSummary[] {
-  const rows = getDb()
-    .prepare(`SELECT ${SUMMARY_COLS} FROM meetings ORDER BY created_at DESC`)
-    .all() as unknown as SummaryRow[]
+/** Every note, newest first. `limit` is for callers that only render a page of
+ *  the library — chat must not pass it: the list it gets back is the scope
+ *  retrieval is allowed to search, so a limit would make older notes
+ *  unfindable rather than merely unlisted. */
+export function listMeetings(limit?: number): MeetingSummary[] {
+  const db = getDb()
+  const rows = (
+    limit === undefined
+      ? db.prepare(`SELECT ${SUMMARY_COLS} FROM meetings ORDER BY created_at DESC`).all()
+      : db
+          .prepare(`SELECT ${SUMMARY_COLS} FROM meetings ORDER BY created_at DESC LIMIT ?`)
+          .all(limit)
+  ) as unknown as SummaryRow[]
   return rows.map(toSummary)
 }
 
@@ -122,6 +131,17 @@ export function saveEnhanced(
   }
 }
 
+/** Whether this note already holds an enhanced document. The enhancer asks
+ *  before letting a truncated result through: saveEnhanced replaces the doc
+ *  outright, Enhance stays enabled after the first run, and enhanced notes are
+ *  hand-editable — so overwriting one with a cut-off retry is silent data loss. */
+export function hasEnhancement(id: string): boolean {
+  const row = getDb().prepare('SELECT enhanced_md FROM meetings WHERE id = ?').get(id) as
+    | { enhanced_md: string | null }
+    | undefined
+  return !!row?.enhanced_md
+}
+
 /** Persist a manual edit to an existing enhanced doc. Unlike saveEnhanced this
  *  leaves enhanced_at, title, and status untouched — it's an edit, not a fresh
  *  enhancement. */
@@ -135,8 +155,15 @@ export function deleteMeeting(id: string): void {
   const db = getDb()
   db.exec('BEGIN')
   try {
+    // search_fts.meeting_id is UNINDEXED — deleting by it scans the whole index.
+    // The meeting row carries the FTS rowid, so read it before dropping the row.
+    const row = db.prepare('SELECT fts_rowid FROM meetings WHERE id = ?').get(id) as
+      | { fts_rowid: number | null }
+      | undefined
     db.prepare('DELETE FROM meetings WHERE id = ?').run(id)
-    db.prepare('DELETE FROM search_fts WHERE meeting_id = ?').run(id)
+    if (row?.fts_rowid != null) {
+      db.prepare('DELETE FROM search_fts WHERE rowid = ?').run(row.fts_rowid)
+    }
     db.exec('COMMIT')
   } catch (err) {
     db.exec('ROLLBACK')

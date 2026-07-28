@@ -1,6 +1,6 @@
 import { generateJSON } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
-import { marked } from 'marked'
+import { renderMarkdown } from './markdown'
 import { UserTextMark } from './userTextMark'
 
 const U_OPEN = '⟦U⟧'
@@ -9,7 +9,7 @@ const U_CLOSE = '⟦/U⟧'
 const SPAN_OPEN = '<span data-user-text="true">'
 
 export function markdownToHtml(markdown: string): string {
-  const html = marked.parse(markdown, { async: false, gfm: true, breaks: false })
+  const html = renderMarkdown(markdown)
   // Convert sentinels to spans after markdown rendering, so markers survive
   // inline formatting. Browsers auto-balance spans that cross block edges.
   // Inside <pre>/<code> a span would be invalid markup — drop the markers there.

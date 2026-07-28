@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useActiveMeetingStore } from '../stores/activeMeetingStore'
 
@@ -6,7 +6,11 @@ export default function MeetingDetectedBanner(): React.JSX.Element | null {
   const navigate = useNavigate()
   const [visible, setVisible] = useState(false)
   const [dismissed, setDismissed] = useState(false)
-  const { recorderState, startRecording } = useActiveMeetingStore()
+  const recorderState = useActiveMeetingStore((s) => s.recorderState)
+  const startRecording = useActiveMeetingStore((s) => s.startRecording)
+  // The button, the notification and the parked panel request can all fire
+  // before recorderState leaves 'idle' — one meeting, one start.
+  const starting = useRef(false)
 
   useEffect(() => {
     return window.api.on('mic:activity', ({ inUse }) => {
@@ -38,10 +42,16 @@ export default function MeetingDetectedBanner(): React.JSX.Element | null {
   }, [])
 
   async function takeNotes(): Promise<void> {
+    if (starting.current) return
+    starting.current = true
     setVisible(false)
-    const meeting = await window.api.invoke('meetings:create')
-    navigate(`/note/${meeting.id}`)
-    await startRecording(meeting.id)
+    try {
+      const meeting = await window.api.invoke('meetings:create')
+      navigate(`/note/${meeting.id}`)
+      await startRecording(meeting.id)
+    } finally {
+      starting.current = false
+    }
   }
 
   // Hide while we're the ones using the mic
