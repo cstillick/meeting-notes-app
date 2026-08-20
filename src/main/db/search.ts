@@ -1,4 +1,5 @@
 import type { MeetingSummary } from '@shared/types'
+import { pmToPlainText, type TranscriptLine } from '../enhance/prompt'
 import { getDb } from './database'
 import { listMeetings } from './meetings'
 import { rebuildChunks } from './chunks'
@@ -12,7 +13,7 @@ export function setOnReindexed(cb: (meetingId: string) => void): void {
 
 /** Extract plain text from ProseMirror JSON (best-effort, for indexing).
  *  Iterative walk: notes_json depth is untrusted, recursion would overflow. */
-function pmToText(json: string): string {
+export function pmToText(json: string): string {
   try {
     const parts: string[] = []
     const stack: unknown[] = [JSON.parse(json)]
@@ -36,29 +37,53 @@ function pmToText(json: string): string {
 export function reindexMeeting(meetingId: string): void {
   const db = getDb()
   const meeting = db
-    .prepare('SELECT title, notes_json, enhanced_md FROM meetings WHERE id = ?')
-    .get(meetingId) as { title: string; notes_json: string; enhanced_md: string | null } | undefined
+    .prepare('SELECT title, notes_json, enhanced_md, fts_rowid FROM meetings WHERE id = ?')
+    .get(meetingId) as
+    | { title: string; notes_json: string; enhanced_md: string | null; fts_rowid: number | null }
+    | undefined
   if (!meeting) return
 
-  const transcript = (
+  const segments = (
     db
-      .prepare('SELECT text FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms')
-      .all(meetingId) as { text: string }[]
-  )
-    .map((r) => r.text)
-    .join(' ')
+      .prepare(
+        // ", id" tiebreak: mic and system segments routinely share a start_ms,
+        // and an unstable tie order would shift chunk boundaries (invalidating
+        // embeddings) between reindexes for no textual reason.
+        'SELECT channel, text, start_ms, speaker FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms, id'
+      )
+      .all(meetingId) as unknown as {
+      channel: 'mic' | 'system'
+      text: string
+      start_ms: number
+      speaker: number | null
+    }[]
+  ).map<TranscriptLine>((r) => ({
+    channel: r.channel,
+    text: r.text,
+    startMs: r.start_ms,
+    speaker: r.speaker
+  }))
 
-  const body = [pmToText(meeting.notes_json), meeting.enhanced_md ?? '', transcript].join(' ')
+  // FTS gets the flat join: it tokenizes anyway, and timestamp/speaker prefixes
+  // would only add junk tokens.
+  const body = [
+    pmToText(meeting.notes_json),
+    meeting.enhanced_md ?? '',
+    segments.map((s) => s.text).join(' ')
+  ].join(' ')
 
   // SAVEPOINT (not BEGIN): callers may already hold a transaction.
   db.exec('SAVEPOINT reindex')
   try {
-    db.prepare('DELETE FROM search_fts WHERE meeting_id = ?').run(meetingId)
-    db.prepare('INSERT INTO search_fts (meeting_id, title, body) VALUES (?, ?, ?)').run(
-      meetingId,
-      meeting.title,
-      body
-    )
+    // By rowid, never by meeting_id: that column is UNINDEXED, so fts5 answers
+    // a predicate on it by scanning the entire index.
+    if (meeting.fts_rowid !== null) {
+      db.prepare('DELETE FROM search_fts WHERE rowid = ?').run(meeting.fts_rowid)
+    }
+    const { lastInsertRowid } = db
+      .prepare('INSERT INTO search_fts (meeting_id, title, body) VALUES (?, ?, ?)')
+      .run(meetingId, meeting.title, body)
+    db.prepare('UPDATE meetings SET fts_rowid = ? WHERE id = ?').run(lastInsertRowid, meetingId)
     db.exec('RELEASE reindex')
   } catch (err) {
     db.exec('ROLLBACK TO reindex')
@@ -66,10 +91,27 @@ export function reindexMeeting(meetingId: string): void {
     throw err
   }
 
-  // Same sources as the FTS body, but as separate sections so an edit in one
-  // never shifts another's chunk boundaries.
-  rebuildChunks(meetingId, [pmToText(meeting.notes_json), meeting.enhanced_md ?? '', transcript])
+  // Same sources as the FTS body, but structured — line-structured notes and
+  // raw segments — so chunks cut on real boundaries and carry attribution. Kept
+  // as separate sections so an edit in one never shifts another's boundaries.
+  rebuildChunks(meetingId, [pmToPlainText(meeting.notes_json), meeting.enhanced_md ?? ''], segments)
   onReindexed?.(meetingId)
+}
+
+/** Reindex a set of notes in one transaction. The startup chunk backfill would
+ *  otherwise pay a WAL commit (and fsync) per note. */
+export function reindexMeetings(meetingIds: string[]): void {
+  if (meetingIds.length === 0) return
+  const db = getDb()
+  db.exec('SAVEPOINT reindex_batch')
+  try {
+    for (const id of meetingIds) reindexMeeting(id)
+    db.exec('RELEASE reindex_batch')
+  } catch (err) {
+    db.exec('ROLLBACK TO reindex_batch')
+    db.exec('RELEASE reindex_batch')
+    throw err
+  }
 }
 
 // Filler words a natural-language question carries that would drown an FTS
@@ -121,9 +163,14 @@ export function searchMeetings(query: string): MeetingSummary[] {
       .map((t) => `"${t.replace(/"/g, '""')}"*`)
       .join(' ')
     if (!ftsQuery) return []
+    // Ranked, so LIMIT keeps the *best* 100, not an arbitrary 100 in
+    // last-reindex order. Weights match the MCP server (title 10×, body 1×;
+    // meeting_id is UNINDEXED) so the same query ranks the same everywhere.
     ids = (
       db
-        .prepare('SELECT meeting_id FROM search_fts WHERE search_fts MATCH ? LIMIT 100')
+        .prepare(
+          'SELECT meeting_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts, 0.0, 10.0, 1.0) LIMIT 100'
+        )
         .all(ftsQuery) as { meeting_id: string }[]
     ).map((r) => r.meeting_id)
   } catch (err) {
@@ -132,13 +179,13 @@ export function searchMeetings(query: string): MeetingSummary[] {
   }
   if (ids.length === 0) return []
 
-  // Fetch only the matched meetings (not the whole table), newest first.
+  // Fetch only the matched meetings (not the whole table); display order is
+  // relevance order, restored below from the ranked id list.
   const placeholders = ids.map(() => '?').join(',')
   const rows = db
     .prepare(
       `SELECT id, title, created_at, started_at, ended_at, status, folder_id
-         FROM meetings WHERE id IN (${placeholders})
-        ORDER BY created_at DESC`
+         FROM meetings WHERE id IN (${placeholders})`
     )
     .all(...ids) as {
     id: string
@@ -149,13 +196,16 @@ export function searchMeetings(query: string): MeetingSummary[] {
     status: MeetingSummary['status']
     folder_id: string | null
   }[]
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    createdAt: r.created_at,
-    startedAt: r.started_at,
-    endedAt: r.ended_at,
-    status: r.status,
-    folderId: r.folder_id
-  }))
+  const rank = new Map(ids.map((id, i) => [id, i]))
+  return rows
+    .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0))
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      createdAt: r.created_at,
+      startedAt: r.started_at,
+      endedAt: r.ended_at,
+      status: r.status,
+      folderId: r.folder_id
+    }))
 }

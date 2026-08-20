@@ -51,8 +51,12 @@ export default function SettingsView(): React.JSX.Element {
   const [deepgramKey, setDeepgramKey] = useState('')
   const [anthropicKey, setAnthropicKey] = useState('')
   const [voyageKey, setVoyageKey] = useState('')
+  const [notionToken, setNotionToken] = useState('')
+  const [notionParentPageId, setNotionParentPageId] = useState('')
   const [model, setModel] = useState('')
   const [theme, setTheme] = useState<Theme>('system')
+  const [systemAudioOnly, setSystemAudioOnly] = useState(false)
+  const [calendarAutoRecord, setCalendarAutoRecord] = useState(false)
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
@@ -63,6 +67,9 @@ export default function SettingsView(): React.JSX.Element {
     if (settings) {
       setModel(settings.model)
       setTheme(settings.theme)
+      setSystemAudioOnly(settings.systemAudioOnly)
+      setCalendarAutoRecord(settings.calendarAutoRecord)
+      setNotionParentPageId(settings.notionParentPageId)
     }
   }, [settings])
 
@@ -77,12 +84,17 @@ export default function SettingsView(): React.JSX.Element {
       ...(deepgramKey ? { deepgramKey } : {}),
       ...(anthropicKey ? { anthropicKey } : {}),
       ...(voyageKey ? { voyageKey } : {}),
+      ...(notionToken ? { notionToken } : {}),
+      notionParentPageId,
       model,
-      theme
+      theme,
+      systemAudioOnly,
+      calendarAutoRecord
     })
     setDeepgramKey('')
     setAnthropicKey('')
     setVoyageKey('')
+    setNotionToken('')
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -124,6 +136,31 @@ export default function SettingsView(): React.JSX.Element {
               Without it, cross-note chat uses keyword search only. Get a key at voyageai.com.
             </span>
           </div>
+          <div>
+            <KeyField
+              label="Notion integration token (optional)"
+              placeholder="Enables Export to Notion"
+              isSet={settings?.notionTokenSet ?? false}
+              value={notionToken}
+              onChange={setNotionToken}
+            />
+            <label className="mt-2 block">
+              <span className="mb-1 block text-sm font-medium text-stone-700">
+                Notion parent page
+              </span>
+              <input
+                type="text"
+                value={notionParentPageId}
+                onChange={(e) => setNotionParentPageId(e.target.value)}
+                placeholder="Page id or URL exports are created under"
+                className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm placeholder:text-stone-400 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 focus:outline-none"
+              />
+            </label>
+            <span className="mt-1 block text-xs text-stone-400">
+              Create an internal integration at notion.so/my-integrations, then share the parent
+              page with it (page menu → Connections).
+            </span>
+          </div>
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-stone-700">Claude model</span>
             <select
@@ -160,6 +197,41 @@ export default function SettingsView(): React.JSX.Element {
             </select>
             <span className="mt-1 block text-xs text-stone-400">
               System follows your macOS Appearance setting.
+            </span>
+          </label>
+          <label className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              checked={systemAudioOnly}
+              onChange={(e) => setSystemAudioOnly(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-stone-300 text-amber-600 focus:ring-amber-500"
+            />
+            <span>
+              <span className="block text-sm font-medium text-stone-700">
+                Mute microphone (record system audio only)
+              </span>
+              <span className="mt-0.5 block text-xs text-stone-400">
+                Captures only what other participants say — your mic is never opened. Takes effect on
+                the next recording you start.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              checked={calendarAutoRecord}
+              onChange={(e) => setCalendarAutoRecord(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-stone-300 text-amber-600 focus:ring-amber-500"
+            />
+            <span>
+              <span className="block text-sm font-medium text-stone-700">
+                Auto-record calendar meetings
+              </span>
+              <span className="mt-0.5 block text-xs text-stone-400">
+                When a calendar event with attendees or a meeting link starts, recording begins
+                automatically with a note titled after the event. Saving with this on asks macOS for
+                calendar access the first time.
+              </span>
             </span>
           </label>
           <div className="flex items-center gap-3">

@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "types": ["node"],
+    // The server's sources import each other with explicit .ts specifiers (so
+    // plain `node src/mcp/server.ts` works during development). For the bundle
+    // those must become .js, which is exactly what rewriteRelativeImportExtensions
+    // does on emit.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "rootDir": "src",
+    "outDir": "build/mcpb/dist",
+    "paths": {
+      "@shared/*": ["./src/shared/*"]
+    }
+  },
+  // enhance/prompt.ts is the server's one import from the app proper. Its only
+  // import is `import type`, which is erased, so it compiles standalone.
+  "include": ["src/mcp/**/*", "src/main/enhance/prompt.ts"]
+}

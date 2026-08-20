@@ -1,3 +1,5 @@
+import type { ModelOption } from '@shared/types'
+
 // Minimal structural shape shared by TranscriptSegment (speaker: number | null)
 // and ChatLiveFinal (speaker?: number) so chat can format either source.
 export interface TranscriptLine {
@@ -5,6 +7,52 @@ export interface TranscriptLine {
   text: string
   startMs: number
   speaker?: number | null
+}
+
+/** Conservative chars-per-token for English prose (the real ratio is ~3.5-4,
+ *  so this over-counts tokens rather than under-counting them). */
+const CHARS_PER_TOKEN = 3
+/** Share of the window the prompt may fill. The rest covers thinking tokens,
+ *  the answer, and the error in the estimate above. */
+const PROMPT_WINDOW_FRACTION = 0.6
+/** Ceiling regardless of window size: a 1M-token model would swallow ~1.8M
+ *  chars, but a prompt that size costs minutes and dollars on every request. */
+const MAX_PROMPT_CHARS = 500_000
+
+/** How many chars of retrieved content a request may still spend, given the
+ *  selected model's window and what the fixed parts (system prompts, replayed
+ *  history, meeting index) already cost. Only `claude-haiku-4-5` has a 200K
+ *  window — every other offered model has 1M — so this is keyed off the model
+ *  rather than a fixed constant. Without it a marathon recording 400s the API
+ *  with "prompt too long" instead of degrading. */
+export function promptBudget(model: ModelOption, fixedChars: number): number {
+  const window = Math.floor(model.contextTokens * PROMPT_WINDOW_FRACTION * CHARS_PER_TOKEN)
+  return Math.max(0, Math.min(MAX_PROMPT_CHARS, window) - fixedChars)
+}
+
+export const MAX_NOTES_CHARS = 150_000
+
+/** Per-line formatting overhead: "[m:ss] [Speaker N] " + newline. */
+const TRANSCRIPT_LINE_OVERHEAD = 24
+
+/** Newest transcript lines that fit the budget. Trimming drops the oldest
+ *  lines first: "what did they just say" questions outnumber ones about a
+ *  9-hour-old opening remark, and live chat always concerns the tail. */
+export function fitTranscript(
+  lines: TranscriptLine[],
+  budget: number
+): { text: string; note: string } {
+  let total = 0
+  let start = lines.length
+  while (start > 0 && total + lines[start - 1].text.length + TRANSCRIPT_LINE_OVERHEAD <= budget) {
+    total += lines[start - 1].text.length + TRANSCRIPT_LINE_OVERHEAD
+    start--
+  }
+  if (start === 0) return { text: formatTranscript(lines), note: '' }
+  return {
+    text: formatTranscript(lines.slice(start)),
+    note: `[Transcript trimmed to fit the context window: the earliest ${start} of ${lines.length} lines are omitted; the transcript below starts partway through the meeting.]\n`
+  }
 }
 
 // Static system prompt (stable prefix — cacheable).
@@ -33,8 +81,20 @@ export function pmToPlainText(notesJson: string): string {
         return
       }
       if (n.type === 'listItem' || n.type === 'taskItem') {
-        const text = collectText(n)
+        const children = Array.isArray(n.content) ? n.content : []
+        const isNestedList = (c: unknown): boolean => {
+          const t = (c as { type?: string } | null)?.type
+          return t === 'bulletList' || t === 'orderedList'
+        }
+        // Only this item's own text on this line; a nested list would
+        // otherwise fuse into it ("first pointnested detail") and poison
+        // FTS, chunks, and prompts. Nested lists walk as deeper items.
+        const text = children
+          .filter((c) => !isNestedList(c))
+          .map(collectText)
+          .join('')
         if (text.trim()) lines.push(`${'  '.repeat(depth)}- ${text}`)
+        children.filter(isNestedList).forEach((c) => walkBlock(c, depth))
         return
       }
       if (Array.isArray(n.content)) {
@@ -79,11 +139,19 @@ export function formatTranscript(lines: TranscriptLine[]): string {
     .join('\n')
 }
 
+/** Appended to a first-time enhancement that hit `stop_reason: 'max_tokens'`,
+ *  so the saved document says so rather than just ending mid-sentence. */
+export const TRUNCATION_NOTE =
+  '_[Enhancement cut off — the model hit its output limit before finishing. Re-run to try again.]_'
+
 export function buildUserMessage(args: {
   title: string
   startedAt: number | null
   notesJson: string
   segments: TranscriptLine[]
+  /** Chars the notes + transcript may fill. The oldest transcript lines are
+   *  dropped first when the meeting outgrows the selected model's window. */
+  budget: number
 }): string {
   const when = args.startedAt
     ? new Date(args.startedAt).toLocaleString(undefined, {
@@ -95,9 +163,11 @@ export function buildUserMessage(args: {
       })
     : 'unknown time'
 
-  const roughNotes = pmToPlainText(args.notesJson) || '(no notes typed)'
+  const roughNotes =
+    pmToPlainText(args.notesJson).slice(0, Math.min(MAX_NOTES_CHARS, args.budget)) ||
+    '(no notes typed)'
 
-  const transcript = formatTranscript(args.segments) || '(no transcript)'
+  const transcript = fitTranscript(args.segments, Math.max(0, args.budget - roughNotes.length))
 
   return `Meeting: ${args.title || 'Untitled meeting'}
 When: ${when}
@@ -107,6 +177,6 @@ ${roughNotes}
 </rough_notes>
 
 <transcript>
-${transcript}
+${transcript.note}${transcript.text || '(no transcript)'}
 </transcript>`
 }

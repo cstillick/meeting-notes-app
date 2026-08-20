@@ -33,7 +33,7 @@ export default function ChatPanel({
   async function onClear(): Promise<void> {
     if (messages.length === 0) return
     if (!confirm('Clear this conversation?')) return
-    await clear(meetingId, folderId)
+    await clear(chatKey)
   }
 
   return (
@@ -57,6 +57,7 @@ export default function ChatPanel({
           )}
           <button
             onClick={onClose}
+            aria-label="Close chat panel"
             title="Close (Esc)"
             className="rounded px-2 py-0.5 text-xs text-stone-400 hover:bg-stone-100 hover:text-stone-600"
           >
@@ -101,7 +102,14 @@ export default function ChatPanel({
 
         {error && (
           <div className="flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            <span className="min-w-0 break-words">{error}</span>
+            <span className="min-w-0 break-words">
+              {error}
+              {thread?.errorRetryable && (
+                <span className="mt-0.5 block text-xs text-red-500">
+                  Looks temporary — retrying will likely work.
+                </span>
+              )}
+            </span>
             {thread?.lastQuestion && (
               <button
                 onClick={() => void send(meetingId, folderId, thread.lastQuestion!)}

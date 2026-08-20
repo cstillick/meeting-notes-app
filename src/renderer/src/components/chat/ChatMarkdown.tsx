@@ -1,21 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Marked } from 'marked'
-
-// Own Marked instance: marked's default export is a shared singleton also used
-// by the enhance pipeline (markdownToDoc), and we override the html renderer.
-const escapeHtml = (s: string): string =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-
-const chatMarked = new Marked({ gfm: true, breaks: false })
-chatMarked.use({
-  renderer: {
-    // Model output is injected via innerHTML — neutralize any raw HTML it
-    // emits (block and inline tags both land here) instead of trusting it.
-    html({ text }) {
-      return escapeHtml(text)
-    }
-  }
-})
+import { escapeHtml, renderMarkdown } from '../../editor/markdown'
 
 const PROSE_CLASS =
   'chat-md prose prose-stone prose-sm max-w-none ' +
@@ -26,7 +10,7 @@ const PROSE_CLASS =
 export function ChatMarkdown({ markdown }: { markdown: string }): React.JSX.Element {
   const html = useMemo(() => {
     try {
-      return chatMarked.parse(markdown, { async: false })
+      return renderMarkdown(markdown)
     } catch {
       return escapeHtml(markdown)
     }

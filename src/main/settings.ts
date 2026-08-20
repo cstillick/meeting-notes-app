@@ -4,6 +4,8 @@ import { join } from 'path'
 import {
   DEFAULT_MODEL,
   DEFAULT_THEME,
+  modelCapabilities,
+  type ModelOption,
   type SettingsUpdate,
   type SettingsView,
   type Theme
@@ -16,6 +18,14 @@ interface StoredSettings {
   voyageKeyEnc: string | null
   model: string
   theme: Theme
+  /** Record system audio only — skip the microphone entirely. */
+  systemAudioOnly: boolean
+  /** Start recording automatically when a calendar meeting begins. */
+  calendarAutoRecord: boolean
+  /** Notion internal-integration token (for Export to Notion), encrypted. */
+  notionTokenEnc: string | null
+  /** Notion page id under which exports are created (not secret). */
+  notionParentPageId: string
 }
 
 const DEFAULTS: StoredSettings = {
@@ -23,7 +33,11 @@ const DEFAULTS: StoredSettings = {
   anthropicKeyEnc: null,
   voyageKeyEnc: null,
   model: DEFAULT_MODEL,
-  theme: DEFAULT_THEME
+  theme: DEFAULT_THEME,
+  systemAudioOnly: false,
+  calendarAutoRecord: false,
+  notionTokenEnc: null,
+  notionParentPageId: ''
 }
 
 const THEMES: readonly Theme[] = ['light', 'dark', 'system']
@@ -72,12 +86,20 @@ function decrypt(enc: string | null): string | null {
 
 export function getSettingsView(): SettingsView {
   const s = load()
+  // "Set" means decryptable, not merely present: after a keychain change or a
+  // userData copy from another machine, decrypt fails and every consumer
+  // behaves as if the key were absent — Settings must not claim otherwise, or
+  // the user has no signal to re-enter the key.
   return {
-    deepgramKeySet: s.deepgramKeyEnc !== null,
-    anthropicKeySet: s.anthropicKeyEnc !== null,
-    voyageKeySet: s.voyageKeyEnc !== null,
+    deepgramKeySet: !!decrypt(s.deepgramKeyEnc)?.trim(),
+    anthropicKeySet: !!decrypt(s.anthropicKeyEnc)?.trim(),
+    voyageKeySet: !!decrypt(s.voyageKeyEnc)?.trim(),
     model: s.model,
-    theme: THEMES.includes(s.theme) ? s.theme : DEFAULT_THEME
+    theme: THEMES.includes(s.theme) ? s.theme : DEFAULT_THEME,
+    systemAudioOnly: s.systemAudioOnly,
+    calendarAutoRecord: s.calendarAutoRecord,
+    notionTokenSet: !!decrypt(s.notionTokenEnc)?.trim(),
+    notionParentPageId: s.notionParentPageId
   }
 }
 
@@ -101,6 +123,19 @@ export function updateSettings(update: SettingsUpdate): SettingsView {
   if (update.theme !== undefined && THEMES.includes(update.theme)) {
     s.theme = update.theme
   }
+  if (update.systemAudioOnly !== undefined) {
+    s.systemAudioOnly = update.systemAudioOnly
+  }
+  if (update.calendarAutoRecord !== undefined) {
+    s.calendarAutoRecord = update.calendarAutoRecord
+  }
+  if (update.notionToken !== undefined) {
+    const key = update.notionToken?.trim()
+    s.notionTokenEnc = key ? encrypt(key) : null
+  }
+  if (update.notionParentPageId !== undefined) {
+    s.notionParentPageId = update.notionParentPageId.trim()
+  }
   persist(s)
   return getSettingsView()
 }
@@ -121,4 +156,29 @@ export function getVoyageKey(): string | null {
 
 export function getModel(): string {
   return load().model
+}
+
+/** Capabilities of the selected model. Every Anthropic request derives its
+ *  shape (thinking config) and its context budget from this one call, so the
+ *  chat and enhance paths can never disagree about what the model accepts.
+ *  `.id` is the model string to send — for a custom model it is what the user
+ *  stored, verbatim. */
+export function getModelCapabilities(): ModelOption {
+  return modelCapabilities(getModel())
+}
+
+export function getSystemAudioOnly(): boolean {
+  return load().systemAudioOnly
+}
+
+export function getCalendarAutoRecord(): boolean {
+  return load().calendarAutoRecord
+}
+
+export function getNotionToken(): string | null {
+  return decrypt(load().notionTokenEnc)?.trim() || null
+}
+
+export function getNotionParentPageId(): string {
+  return load().notionParentPageId
 }

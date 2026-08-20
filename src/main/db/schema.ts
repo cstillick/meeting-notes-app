@@ -101,5 +101,66 @@ export const MIGRATIONS: string[] = [
     embedding  BLOB,
     UNIQUE(meeting_id, seq)
   );
+  `,
+  // v6: address each meeting's FTS row by rowid. search_fts.meeting_id is
+  // UNINDEXED, so deleting by it makes fts5 scan the whole index — on every
+  // autosave. The backfill maps existing rows in one pass (a correlated
+  // subquery over search_fts would be one scan per meeting), then drops any FTS
+  // row no meeting claims, so the mapping is one-to-one from here on.
+  `
+  ALTER TABLE meetings ADD COLUMN fts_rowid INTEGER;
+  CREATE TEMP TABLE fts_map AS SELECT rowid AS rid, meeting_id AS mid FROM search_fts;
+  CREATE INDEX temp.idx_fts_map ON fts_map(mid);
+  UPDATE meetings SET fts_rowid = (SELECT rid FROM fts_map WHERE mid = meetings.id);
+  DROP TABLE temp.fts_map;
+  DELETE FROM search_fts
+    WHERE rowid NOT IN (SELECT fts_rowid FROM meetings WHERE fts_rowid IS NOT NULL);
+  `,
+  // v7: re-chunk every note under the structural chunker (transcript chunks now
+  // carry a time range and speaker labels, so old boundaries — and the vectors
+  // built from them — are stale). chunked_at is stamped by rebuildChunks so the
+  // startup backfill converges: notes whose text yields zero chunks were
+  // otherwise re-selected, and re-indexed, on every launch forever.
+  `
+  ALTER TABLE meetings ADD COLUMN chunked_at INTEGER;
+  DELETE FROM chunks;
+  `,
+  // v8: record which embedding model produced each vector. Without it a model
+  // (or dimension) change strands rows that are never re-embedded and, because
+  // cosineTopK skips mismatched dimensions, never retrieved either. The partial
+  // index keeps the embedder's "anything left?" probe proportional to the
+  // number of unembedded rows rather than to the whole table.
+  `
+  ALTER TABLE chunks ADD COLUMN model TEXT;
+  ALTER TABLE chunks ADD COLUMN dim INTEGER;
+  CREATE INDEX idx_chunks_unembedded ON chunks(id) WHERE embedding IS NULL;
+  `,
+  // v9: index the ordering the library list uses. `ORDER BY created_at DESC`
+  // over the whole table is a full scan plus a temp b-tree sort, and it runs on
+  // every home render and on every turn of the global chat thread.
+  `
+  CREATE INDEX idx_meetings_created ON meetings(created_at DESC);
+  `,
+  // v10: knowledge graph. Claude extracts concepts/people/orgs per note into
+  // entities (deduped by a normalized name) with per-note salience weights;
+  // note↔note edges are derived from shared entities at read time. entities_at
+  // NULL marks a note whose extraction is missing or stale — the extractor
+  // drains those, exactly like chunked_at drives the chunk backfill.
+  `
+  CREATE TABLE entities (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    norm TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL DEFAULT 'concept'
+         CHECK (kind IN ('concept','person','organization','topic'))
+  );
+  CREATE TABLE note_entities (
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    entity_id  INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    weight     REAL NOT NULL DEFAULT 0.5,
+    PRIMARY KEY (meeting_id, entity_id)
+  );
+  CREATE INDEX idx_note_entities_entity ON note_entities(entity_id);
+  ALTER TABLE meetings ADD COLUMN entities_at INTEGER;
   `
 ]

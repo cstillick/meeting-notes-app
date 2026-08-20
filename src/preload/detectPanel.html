@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'"
+    />
+    <title>Meeting detected</title>
+    <style>
+      html,body{margin:0;background:transparent;font:13px -apple-system,sans-serif;-webkit-user-select:none;overflow:hidden}
+      .wrap{display:flex;align-items:center;gap:10px;height:100vh;padding:0 8px 0 14px;background:#fff;
+        border:1px solid #e7e5e4;border-radius:12px;box-sizing:border-box}
+      .msg{color:#44403c;flex:1;white-space:nowrap}
+      button{font:inherit;border:0;border-radius:6px;padding:6px 10px;cursor:pointer;background:transparent}
+      .start{background:#d97706;color:#fff;font-weight:600}
+      .start:hover{background:#b45309}
+      .dismiss{color:#a8a29e;padding:6px 8px}
+      .dismiss:hover{color:#57534e}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <span class="msg">Meeting detected &mdash; take notes?</span>
+      <button class="start" data-detect-action="start">Start recording</button>
+      <button class="dismiss" data-detect-action="dismiss" title="Dismiss">&#10005;</button>
+    </div>
+    <script src="./detectPanelUi.js"></script>
+  </body>
+</html>

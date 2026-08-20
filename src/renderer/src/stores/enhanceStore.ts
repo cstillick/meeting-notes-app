@@ -7,8 +7,16 @@ interface EnhanceState {
   /** accumulated markdown for the streaming meeting */
   buffer: string
   error: string | null
+  /** meetingId the error belongs to — only that note should show it */
+  errorFor: string | null
+  /** transport-level failure (429/5xx) — a retry is worth offering */
+  errorRetryable: boolean
+  /** markdown that streamed before the failure; shown, never auto-saved */
+  partial: string | null
   /** bumped when a result is saved so views can reload the meeting */
   savedVersion: number
+  /** meetingId the last saved result belongs to — only that note should react */
+  savedFor: string | null
   start: (meetingId: string) => Promise<string | null>
   cancel: () => void
 }
@@ -35,6 +43,7 @@ export const useEnhanceStore = create<EnhanceState>((set, get) => {
     })
 
     window.api.on('enhance:done', ({ meetingId, markdown }) => {
+      if (get().streamingId !== meetingId) return
       if (pendingThrottle) {
         clearTimeout(pendingThrottle)
         pendingThrottle = null
@@ -51,25 +60,45 @@ export const useEnhanceStore = create<EnhanceState>((set, get) => {
           content: [{ type: 'paragraph', content: [{ type: 'text', text: body }] }]
         })
       }
-      void window.api
+      window.api
         .invoke('enhance:saveResult', meetingId, docJson, markdown, title ?? undefined)
         .then(() => {
           set((s) => ({
             streamingId: null,
             buffer: '',
-            savedVersion: s.savedVersion + 1
+            savedVersion: s.savedVersion + 1,
+            savedFor: meetingId
           }))
+        })
+        .catch((e) => {
+          // The result streamed fine but the write failed — keep it on screen
+          // as an unsaved partial instead of silently dropping paid output.
+          set({
+            streamingId: null,
+            buffer: '',
+            error: `Couldn't save the result: ${e instanceof Error ? e.message : String(e)}`,
+            errorFor: meetingId,
+            errorRetryable: true,
+            partial: markdown
+          })
         })
     })
 
-    window.api.on('enhance:error', ({ meetingId, message }) => {
+    window.api.on('enhance:error', ({ meetingId, message, retryable, partial }) => {
       if (get().streamingId !== meetingId) return
       if (pendingThrottle) {
         clearTimeout(pendingThrottle)
         pendingThrottle = null
         pendingBuffer = ''
       }
-      set({ streamingId: null, buffer: '', error: message })
+      set({
+        streamingId: null,
+        buffer: '',
+        error: message,
+        errorFor: meetingId,
+        errorRetryable: retryable,
+        partial: partial ?? null
+      })
     })
   }
 
@@ -77,10 +106,21 @@ export const useEnhanceStore = create<EnhanceState>((set, get) => {
     streamingId: null,
     buffer: '',
     error: null,
+    errorFor: null,
+    errorRetryable: false,
+    partial: null,
     savedVersion: 0,
+    savedFor: null,
 
     start: async (meetingId) => {
-      set({ streamingId: meetingId, buffer: '', error: null })
+      set({
+        streamingId: meetingId,
+        buffer: '',
+        error: null,
+        errorFor: null,
+        errorRetryable: false,
+        partial: null
+      })
       const result = await window.api.invoke('enhance:start', meetingId)
       if (!result.ok) {
         set({ streamingId: null })

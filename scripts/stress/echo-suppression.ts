@@ -5,30 +5,13 @@
 // Run: STRESS_USERDATA_DIR=$(mktemp -d) node --experimental-transform-types --import ./scripts/stress/_register.mjs scripts/stress/echo-suppression.ts
 import { createMeeting } from '../../src/main/db/meetings.ts'
 import { insertSegment, getSegments } from '../../src/main/db/transcripts.ts'
-import { Recorder } from '../../src/main/transcription/recorder.ts'
+import { attachRecorder } from './_recorder.ts'
 import { header, result } from './_util.ts'
-
-type TestRecorder = {
-  meetingId: string | null
-  startedAt: number
-  onResult: (
-    ch: 'mic' | 'system',
-    r: { text: string; startMs: number; endMs: number; isFinal: boolean; speaker?: number }
-  ) => void
-  flushPendingMicFinals: () => void
-}
-
-function makeRecorder(meetingId: string): TestRecorder {
-  const rec = new Recorder() as unknown as TestRecorder
-  rec.meetingId = meetingId
-  rec.startedAt = 0
-  return rec
-}
 
 header('System final first, identical overlapping mic final → 1 row')
 {
   const m = createMeeting()
-  const rec = makeRecorder(m.id)
+  const rec = attachRecorder(m.id)
   rec.onResult('system', {
     text: 'Welcome back to the channel, today we are reviewing the new laptop.',
     startMs: 0,
@@ -53,7 +36,7 @@ header('System final first, identical overlapping mic final → 1 row')
 header('Mic final arrives BEFORE matching system final → retracted from hold buffer')
 {
   const m = createMeeting()
-  const rec = makeRecorder(m.id)
+  const rec = attachRecorder(m.id)
   rec.onResult('mic', {
     text: 'the quarterly numbers look very strong this time around',
     startMs: 0,
@@ -79,7 +62,7 @@ header('Mic final arrives BEFORE matching system final → retracted from hold b
 header('Mixed speech (user talking over remote audio) → both kept')
 {
   const m = createMeeting()
-  const rec = makeRecorder(m.id)
+  const rec = attachRecorder(m.id)
   rec.onResult('system', {
     text: 'the quarterly numbers look strong across every region',
     startMs: 0,
@@ -108,7 +91,7 @@ header('Verbatim short duplicate ("yeah exactly") → suppressed as echo')
   // bleed, not the user coincidentally saying the identical phrase in the
   // same two-second window.
   const m = createMeeting()
-  const rec = makeRecorder(m.id)
+  const rec = attachRecorder(m.id)
   rec.onResult('system', { text: 'yeah, exactly.', startMs: 0, endMs: 1000, isFinal: true })
   rec.onResult('mic', { text: 'yeah exactly', startMs: 100, endMs: 1100, isFinal: true })
   rec.flushPendingMicFinals()
@@ -123,7 +106,7 @@ header('Verbatim short duplicate ("yeah exactly") → suppressed as echo')
 header('Lone single-token backchannel ("yeah") → kept')
 {
   const m = createMeeting()
-  const rec = makeRecorder(m.id)
+  const rec = attachRecorder(m.id)
   rec.onResult('system', { text: 'yeah.', startMs: 0, endMs: 800, isFinal: true })
   rec.onResult('mic', { text: 'yeah', startMs: 100, endMs: 700, isFinal: true })
   rec.flushPendingMicFinals()

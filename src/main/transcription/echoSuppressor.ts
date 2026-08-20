@@ -18,7 +18,7 @@ export interface EchoSuppressorOptions {
   /** Mic texts with fewer tokens skip the coverage gate ("yeah", "okay") and
    *  are only suppressed as embedded fragments of one long system entry. */
   minTokens?: number
-  /** Fraction of mic tokens that must appear in the system union. */
+  /** Fraction of mic tokens that must appear in ONE overlapping system entry. */
   coverage?: number
 }
 
@@ -31,13 +31,16 @@ interface SystemEntry {
   startMs: number
   endMs: number
   tokens: Set<string>
+  /** Original word order, for the contiguous-bigram check. */
+  seq: string[]
 }
 
 /** Full match diagnostics — lets the recorder log why a decision was made. */
 export interface EchoVerdict {
   isEcho: boolean
   micTokenCount: number
-  /** Fraction of mic tokens found in the overlapping system union. */
+  /** Best fraction of mic tokens found in ONE overlapping system utterance
+   *  (or two adjacent ones, for a mic final that straddles a system boundary). */
   coverage: number
   /** Distinct system tokens inside the mic segment's tolerance window. */
   unionSize: number
@@ -54,6 +57,25 @@ function tokenize(text: string): string[] {
     .replace(/[^a-z0-9\s]/g, '')
     .split(/\s+/)
     .filter(Boolean)
+}
+
+function coverageOf(micTokens: string[], tokens: Set<string>): number {
+  if (micTokens.length === 0) return 0
+  let hits = 0
+  for (const t of micTokens) {
+    if (tokens.has(t)) hits++
+  }
+  return hits / micTokens.length
+}
+
+/** True if any two adjacent mic words appear adjacent, in that order, in seq. */
+function sharesBigram(micTokens: string[], seq: string[]): boolean {
+  for (let i = 0; i + 1 < micTokens.length; i++) {
+    for (let j = 0; j + 1 < seq.length; j++) {
+      if (seq[j] === micTokens[i] && seq[j + 1] === micTokens[i + 1]) return true
+    }
+  }
+  return false
 }
 
 export class EchoSuppressor {
@@ -74,9 +96,9 @@ export class EchoSuppressor {
    *  before finals and let echoes resolve early. Set-based matching makes
    *  overlapping interim revisions harmless. */
   observeSystem(text: string, startMs: number, endMs: number): void {
-    const tokens = new Set(tokenize(text))
-    if (tokens.size === 0) return
-    this.entries.push({ startMs, endMs, tokens })
+    const seq = tokenize(text)
+    if (seq.length === 0) return
+    this.entries.push({ startMs, endMs, tokens: new Set(seq), seq })
     const cutoff = endMs - this.windowMs
     while (this.entries.length > 0 && this.entries[0].endMs < cutoff) {
       this.entries.shift()
@@ -107,18 +129,36 @@ export class EchoSuppressor {
       }
     }
 
-    // Coverage is measured against the MIC tokens: a mic final spanning two
-    // system finals still matches, while mixed speech (the user talking over
-    // remote audio) scores low and is kept.
-    let hits = 0
-    for (const t of micTokens) {
-      if (systemUnion.has(t)) hits++
+    // Coverage is measured against the MIC tokens, but only ever against ONE
+    // system utterance (or two adjacent ones, for a mic final that straddles a
+    // system boundary) — never the whole window union. That union holds several
+    // seconds of remote vocabulary, enough common words to "cover" a genuine
+    // backchannel like "yeah that sounds good" said while the other party talks,
+    // and a false positive here discards the user's own speech permanently.
+    const utterances = this.mergeInterims(overlapping)
+    let coverage = 0
+    let matched: string[] | null = null
+    for (let i = 0; i < utterances.length; i++) {
+      const single = coverageOf(micTokens, utterances[i].tokens)
+      if (single > coverage) {
+        coverage = single
+        matched = utterances[i].seq
+      }
+      const next = utterances[i + 1]
+      if (!next) continue
+      const pair = coverageOf(micTokens, new Set([...utterances[i].tokens, ...next.tokens]))
+      if (pair > coverage) {
+        coverage = pair
+        matched = [...utterances[i].seq, ...next.seq]
+      }
     }
-    const coverage = micTokens.length > 0 ? hits / micTokens.length : 0
 
     let isEcho: boolean
     if (micTokens.length >= this.minTokens) {
-      isEcho = systemUnion.size > 0 && coverage >= this.coverage
+      // Set matching alone ignores word order, which is what makes accidental
+      // matches on common words easy; the utterance must also reproduce one of
+      // the mic text's word pairs back to back.
+      isEcho = matched !== null && coverage >= this.coverage && sharesBigram(micTokens, matched)
     } else {
       // Short mic texts skip the coverage gate so backchannels ("yeah",
       // "okay") survive — but echo FRAGMENTS leak through that exemption when
@@ -151,6 +191,18 @@ export class EchoSuppressor {
       entryCount: this.entries.length,
       nearestStartDeltaMs
     }
+  }
+
+  /** Collapse each system utterance to its richest revision: observeSystem
+   *  stores every interim, and all revisions of one utterance share its start
+   *  time, so the final (longest) one stands in for the whole group. */
+  private mergeInterims(overlapping: SystemEntry[]): SystemEntry[] {
+    const byStart = new Map<number, SystemEntry>()
+    for (const e of overlapping) {
+      const prev = byStart.get(e.startMs)
+      if (!prev || e.tokens.size > prev.tokens.size) byStart.set(e.startMs, e)
+    }
+    return [...byStart.values()].sort((a, b) => a.startMs - b.startMs)
   }
 
   reset(): void {

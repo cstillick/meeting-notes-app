@@ -5,16 +5,16 @@
 // retrieval — exactly the pre-RAG behavior.
 import { getVoyageKey } from '../settings'
 import {
+  clearStaleEmbeddings,
   listEmbeddedChunks,
   listUnembeddedChunks,
   listUnchunkedMeetingIds,
-  saveChunkEmbedding
+  saveChunkEmbeddings
 } from '../db/chunks'
-import { setOnReindexed, reindexMeeting } from '../db/search'
-import { blobToF32, cosineTopK, f32ToBlob } from './lib'
+import { setOnReindexed, reindexMeetings } from '../db/search'
+import { blobToF32, cosineTopK, EMBED_MODEL, f32ToBlob } from './lib'
 
 const VOYAGE_URL = 'https://api.voyageai.com/v1/embeddings'
-const VOYAGE_MODEL = 'voyage-3.5-lite'
 /** Voyage accepts up to 128 inputs per request. */
 const EMBED_BATCH = 64
 /** Saves coalesce during typing; wait for a quiet moment before embedding. */
@@ -28,7 +28,7 @@ async function embedTexts(
   const res = await fetch(VOYAGE_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ input: texts, model: VOYAGE_MODEL, input_type: inputType })
+    body: JSON.stringify({ input: texts, model: EMBED_MODEL, input_type: inputType })
   })
   if (!res.ok) {
     throw new Error(`Voyage API error ${res.status}: ${(await res.text()).slice(0, 300)}`)
@@ -59,9 +59,10 @@ async function drain(): Promise<void> {
         'document',
         apiKey
       )
-      batch.forEach((c, i) => {
-        if (vectors[i]) saveChunkEmbedding(c.id, f32ToBlob(vectors[i]))
-      })
+      const embedded = batch.flatMap((c, i) =>
+        vectors[i] ? [{ id: c.id, embedding: f32ToBlob(vectors[i]) }] : []
+      )
+      saveChunkEmbeddings(embedded, EMBED_MODEL)
     }
   } catch (err) {
     // Leave the rest unembedded; the next save/launch retries.
@@ -86,8 +87,14 @@ export function initEmbedder(): void {
   setOnReindexed(() => scheduleEmbed())
   setImmediate(() => {
     try {
-      // Notes from before the chunks table existed: reindex chunks them.
-      for (const id of listUnchunkedMeetingIds()) reindexMeeting(id)
+      // Vectors from an older model can never be compared against today's
+      // queries; clearing them here is what makes a model change self-heal
+      // through the ordinary drain below.
+      const stale = clearStaleEmbeddings(EMBED_MODEL)
+      if (stale > 0) console.log(`embedder: cleared ${stale} chunk(s) from a previous model`)
+      // Notes from before the chunks table (or the current chunker) existed:
+      // reindex chunks them. One transaction for the whole backfill.
+      reindexMeetings(listUnchunkedMeetingIds())
     } catch (err) {
       console.error('embedder: chunk backfill failed', err)
     }

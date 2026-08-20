@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.cooperstillick.granola-clone.calendarpeek</string>
+  <key>CFBundleName</key>
+  <string>calendarpeek</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Granola Clone reads your calendar so meetings can auto-record when they start.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Granola Clone reads your calendar so meetings can auto-record when they start.</string>
+</dict>
+</plist>

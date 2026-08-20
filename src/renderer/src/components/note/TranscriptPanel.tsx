@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import type { Bubble } from '../../stores/activeMeetingStore'
 
 // Distinct bubble colors per diarized speaker on the system channel; the
@@ -44,7 +44,7 @@ function BubbleRow({
   )
 }
 
-export default function TranscriptPanel({
+function TranscriptPanel({
   finals,
   interim
 }: {
@@ -60,14 +60,19 @@ export default function TranscriptPanel({
   const empty = finals.length === 0 && !interim.mic && !interim.system
 
   // Caption a system bubble only when its speaker differs from the previous
-  // system bubble — avoids a label on every line of one person's run.
-  const showLabelAt = (i: number): boolean => {
-    if (finals[i].channel !== 'system') return false
-    for (let j = i - 1; j >= 0; j--) {
-      if (finals[j].channel === 'system') return finals[j].speaker !== finals[i].speaker
-    }
-    return true
-  }
+  // system bubble — avoids a label on every line of one person's run. One
+  // forward pass, so a long run doesn't degrade toward O(n²).
+  const showLabels = useMemo(() => {
+    let seenSystem = false
+    let lastSpeaker: number | undefined
+    return finals.map((b) => {
+      if (b.channel !== 'system') return false
+      const show = !seenSystem || lastSpeaker !== b.speaker
+      seenSystem = true
+      lastSpeaker = b.speaker
+      return show
+    })
+  }, [finals])
 
   return (
     <div className="flex h-full flex-col overflow-y-auto px-4 py-3">
@@ -82,7 +87,7 @@ export default function TranscriptPanel({
       )}
       <div className="space-y-1.5">
         {finals.map((b, i) => (
-          <BubbleRow key={`${b.startMs}-${i}`} bubble={b} showLabel={showLabelAt(i)} />
+          <BubbleRow key={`${b.startMs}-${i}`} bubble={b} showLabel={showLabels[i]} />
         ))}
         {interim.system && <BubbleRow bubble={interim.system} isInterim />}
         {interim.mic && <BubbleRow bubble={interim.mic} isInterim />}
@@ -91,3 +96,5 @@ export default function TranscriptPanel({
     </div>
   )
 }
+
+export default memo(TranscriptPanel)

@@ -4,12 +4,24 @@ import { useActiveMeetingStore } from './activeMeetingStore'
 
 export const chatKeyOf = chatKeyFor
 
+/** Inverse of chatKeyOf — chat:history and chat:clear still take the
+ *  (meetingId, folderId) pair the key was built from. */
+function chatKeyParts(chatKey: string): { meetingId: string | null; folderId: string | null } {
+  if (chatKey === 'global') return { meetingId: null, folderId: null }
+  if (chatKey.startsWith('folder:')) {
+    return { meetingId: null, folderId: chatKey.slice('folder:'.length) }
+  }
+  return { meetingId: chatKey, folderId: null }
+}
+
 export interface ChatThread {
   messages: ChatMessage[]
   /** accumulated markdown of the answer currently streaming */
   streamBuffer: string
   streaming: boolean
   error: string | null
+  /** transport-level failure (429/5xx) — a retry is likely to succeed */
+  errorRetryable: boolean
   historyLoaded: boolean
   /** last question sent — lets the error row offer Retry */
   lastQuestion: string | null
@@ -20,6 +32,7 @@ const EMPTY_THREAD: ChatThread = {
   streamBuffer: '',
   streaming: false,
   error: null,
+  errorRetryable: false,
   historyLoaded: false,
   lastQuestion: null
 }
@@ -28,10 +41,12 @@ interface ChatState {
   threads: Record<string, ChatThread>
   /** chatKey of the expanded panel, if any (one open at a time) */
   openKey: string | null
-  loadHistory: (meetingId: string | null, folderId?: string | null) => Promise<void>
+  // Keyed by chatKey rather than a (meetingId, folderId) pair: a caller that
+  // forgot the second argument silently addressed the global thread.
+  loadHistory: (chatKey: string) => Promise<void>
   send: (meetingId: string | null, folderId: string | null, question: string) => Promise<void>
-  cancel: (meetingId: string | null, folderId?: string | null) => void
-  clear: (meetingId: string | null, folderId?: string | null) => Promise<void>
+  cancel: (chatKey: string) => void
+  clear: (chatKey: string) => Promise<void>
   setOpen: (key: string | null) => void
 }
 
@@ -99,10 +114,15 @@ export const useChatStore = create<ChatState>((set, get) => {
       })
     })
 
-    window.api.on('chat:error', ({ chatKey, message }) => {
+    window.api.on('chat:error', ({ chatKey, message, retryable }) => {
       flushPending(chatKey)
       pendingBuffers.delete(chatKey)
-      patchThread(chatKey, { streamBuffer: '', streaming: false, error: message })
+      patchThread(chatKey, {
+        streamBuffer: '',
+        streaming: false,
+        error: message,
+        errorRetryable: retryable
+      })
     })
   }
 
@@ -110,13 +130,22 @@ export const useChatStore = create<ChatState>((set, get) => {
     threads: {},
     openKey: null,
 
-    loadHistory: async (meetingId, folderId = null) => {
-      const chatKey = chatKeyOf(meetingId, folderId)
+    loadHistory: async (chatKey) => {
       if (get().threads[chatKey]?.historyLoaded) return
-      const messages = await window.api.invoke('chat:history', meetingId, folderId)
-      const thread = get().threads[chatKey] ?? EMPTY_THREAD
-      // A stream may have started while history was in flight — keep its state.
-      patchThread(chatKey, { ...thread, messages, historyLoaded: true })
+      const { meetingId, folderId } = chatKeyParts(chatKey)
+      let messages: ChatMessage[]
+      try {
+        messages = await window.api.invoke('chat:history', meetingId, folderId)
+      } catch (e) {
+        patchThread(chatKey, {
+          error: `Couldn't load this conversation: ${e instanceof Error ? e.message : String(e)}`,
+          errorRetryable: false
+        })
+        return
+      }
+      // A stream may have started while history was in flight — patchThread
+      // merges onto the current thread, so its state survives.
+      patchThread(chatKey, { messages, historyLoaded: true })
     },
 
     send: async (meetingId, folderId, question) => {
@@ -147,29 +176,48 @@ export const useChatStore = create<ChatState>((set, get) => {
       const liveFinals =
         meetingId !== null && recordingMeetingId === meetingId ? finals : undefined
 
-      const result = await window.api.invoke('chat:send', {
-        meetingId,
-        folderId,
-        question: q,
-        liveFinals
-      })
+      // A rejected invoke here would strand the thread streaming forever, with
+      // the dock stuck on Stop and no message — treat it as a failed send.
+      let result: { ok: boolean; error?: string }
+      try {
+        result = await window.api.invoke('chat:send', {
+          meetingId,
+          folderId,
+          question: q,
+          liveFinals
+        })
+      } catch (e) {
+        result = { ok: false, error: e instanceof Error ? e.message : String(e) }
+      }
       if (!result.ok) {
         const t = get().threads[chatKey] ?? EMPTY_THREAD
         patchThread(chatKey, {
           messages: t.messages.filter((m) => m.id !== optimistic.id),
           streaming: false,
-          error: result.error ?? 'Failed to send'
+          error: result.error ?? 'Failed to send',
+          errorRetryable: false
         })
       }
     },
 
-    cancel: (meetingId, folderId = null) => {
-      void window.api.invoke('chat:cancel', chatKeyOf(meetingId, folderId))
+    cancel: (chatKey) => {
+      window.api.invoke('chat:cancel', chatKey).catch((e) => {
+        console.error('[chat] cancel failed', e)
+      })
     },
 
-    clear: async (meetingId, folderId = null) => {
-      await window.api.invoke('chat:clear', meetingId, folderId)
-      patchThread(chatKeyOf(meetingId, folderId), { ...EMPTY_THREAD, historyLoaded: true })
+    clear: async (chatKey) => {
+      const { meetingId, folderId } = chatKeyParts(chatKey)
+      try {
+        await window.api.invoke('chat:clear', meetingId, folderId)
+      } catch (e) {
+        patchThread(chatKey, {
+          error: `Couldn't clear this conversation: ${e instanceof Error ? e.message : String(e)}`,
+          errorRetryable: false
+        })
+        return
+      }
+      patchThread(chatKey, { ...EMPTY_THREAD, historyLoaded: true })
     },
 
     setOpen: (key) => set({ openKey: key })

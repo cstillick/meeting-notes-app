@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extensions'
+import { registerFlush } from '../../flush'
 
 export default function NoteEditor({
   meetingId,
@@ -39,17 +40,42 @@ export default function NoteEditor({
     [meetingId]
   )
 
-  // Flush any pending save when leaving the note
-  useEffect(() => {
-    return () => {
-      if (saveTimer.current) {
-        clearTimeout(saveTimer.current)
-        if (editor) {
-          void window.api.invoke('notes:save', meetingId, JSON.stringify(editor.getJSON()))
-        }
-      }
+  const flush = useCallback((): Promise<unknown> | undefined => {
+    if (!saveTimer.current) return undefined
+    clearTimeout(saveTimer.current)
+    saveTimer.current = null
+    if (editor) {
+      return window.api.invoke('notes:save', meetingId, JSON.stringify(editor.getJSON()))
     }
+    return undefined
   }, [editor, meetingId])
+
+  // An external writer (an MCP agent) can change this note while it is open;
+  // NoteView reloads and initialContent changes identity. Adopt the new
+  // content only when it is safe — no local save pending and the editor not
+  // focused. A mid-typing clobber would be worse than a moment of staleness:
+  // the user's next autosave wins, and the agent's change shows on reopen.
+  useEffect(() => {
+    if (!editor || saveTimer.current || editor.isFocused) return
+    const incoming = parseContent(initialContent)
+    if (!incoming) return
+    if (JSON.stringify(editor.getJSON()) === JSON.stringify(incoming)) return
+    editor.commands.setContent(incoming)
+  }, [editor, initialContent])
+
+  // Flush any pending save when leaving the note. The window can also be torn
+  // down without unmounting React (window close / quit), hence pagehide — and
+  // quit itself skips pagehide entirely, hence the registry (see flush.ts).
+  useEffect(() => {
+    const onPagehide = (): void => void flush()
+    window.addEventListener('pagehide', onPagehide)
+    const unregister = registerFlush(flush)
+    return () => {
+      window.removeEventListener('pagehide', onPagehide)
+      unregister()
+      void flush()
+    }
+  }, [flush])
 
   return (
     <div className="h-full cursor-text" onClick={() => editor?.chain().focus().run()}>

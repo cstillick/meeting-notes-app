@@ -17,5 +17,13 @@
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["electron.vite.config.ts", "src/main/**/*", "src/preload/**/*", "src/shared/**/*"]
+  // src/mcp/pm.ts: the markdown block parser is shared with the exporters
+  // (dependency-free, so main can bundle it without dragging in MCP code).
+  "include": [
+    "electron.vite.config.ts",
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/shared/**/*",
+    "src/mcp/pm.ts"
+  ]
 }
