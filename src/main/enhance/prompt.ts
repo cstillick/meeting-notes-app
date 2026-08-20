@@ -81,8 +81,20 @@ export function pmToPlainText(notesJson: string): string {
         return
       }
       if (n.type === 'listItem' || n.type === 'taskItem') {
-        const text = collectText(n)
+        const children = Array.isArray(n.content) ? n.content : []
+        const isNestedList = (c: unknown): boolean => {
+          const t = (c as { type?: string } | null)?.type
+          return t === 'bulletList' || t === 'orderedList'
+        }
+        // Only this item's own text on this line; a nested list would
+        // otherwise fuse into it ("first pointnested detail") and poison
+        // FTS, chunks, and prompts. Nested lists walk as deeper items.
+        const text = children
+          .filter((c) => !isNestedList(c))
+          .map(collectText)
+          .join('')
         if (text.trim()) lines.push(`${'  '.repeat(depth)}- ${text}`)
+        children.filter(isNestedList).forEach((c) => walkBlock(c, depth))
         return
       }
       if (Array.isArray(n.content)) {

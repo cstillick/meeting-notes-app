@@ -41,6 +41,33 @@ export default function MeetingDetectedBanner(): React.JSX.Element | null {
     })
   }, [])
 
+  // Calendar auto-record or an agent's start_recording: main already created
+  // and titled the note; the renderer owns the actual start (mic capture).
+  useEffect(() => {
+    return window.api.on('recording:startRequested', ({ noteId }) => {
+      void startForNote(noteId)
+    })
+  }, [])
+
+  useEffect(() => {
+    void window.api.invoke('recording:consumePendingStart').then((noteId) => {
+      if (noteId) void startForNote(noteId)
+    })
+  }, [])
+
+  async function startForNote(noteId: string): Promise<void> {
+    if (starting.current) return
+    if (useActiveMeetingStore.getState().recorderState !== 'idle') return
+    starting.current = true
+    setVisible(false)
+    try {
+      navigate(`/note/${noteId}`)
+      await startRecording(noteId)
+    } finally {
+      starting.current = false
+    }
+  }
+
   async function takeNotes(): Promise<void> {
     if (starting.current) return
     starting.current = true

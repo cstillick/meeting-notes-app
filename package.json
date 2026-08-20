@@ -11,8 +11,11 @@
   "scripts": {
     "dev": "electron-vite dev --watch",
     "build": "electron-vite build && electron-builder && node scripts/verify-package.mjs",
+    "install-app": "npm run build && rm -rf '/Applications/Granola Clone.app' && cp -R 'dist/mac-arm64/Granola Clone.app' /Applications/ && open -a 'Granola Clone'",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.scripts.json",
+    "mcp": "node src/mcp/server.ts",
+    "build:mcpb": "node scripts/build-mcpb.mjs",
     "stress": "node scripts/stress/run-all.mjs",
     "check": "npm run typecheck && npm run stress",
     "fix-electron-plist": "node scripts/fix-electron-plist.mjs"
@@ -22,6 +25,7 @@
     "@deepgram/sdk": "^5.4.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@tailwindcss/typography": "^0.5.20",
     "@tailwindcss/vite": "^4.3.0",
     "@tiptap/core": "^3.26.0",
@@ -42,6 +46,7 @@
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3",
     "vite": "^7.3.5",
+    "zod": "^4.4.3",
     "zustand": "^5.0.14"
   }
 }

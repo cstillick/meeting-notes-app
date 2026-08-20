@@ -10,6 +10,9 @@ interface LibraryState {
   selectedFolderId: string | null
   /** False until the first meetings fetch lands, so the empty state can wait. */
   ready: boolean
+  /** Note ids an out-of-process agent last changed, with a version bump per
+   *  change event — views showing one of these reload their note. */
+  externallyChanged: { version: number; noteIds: string[] }
   setQuery: (query: string) => void
   selectFolder: (folderId: string | null) => void
   refreshMeetings: () => Promise<void>
@@ -22,6 +25,8 @@ interface LibraryState {
   deleteMeeting: (meetingId: string) => Promise<void>
 }
 
+let libraryListenerAttached = false
+
 export const useLibraryStore = create<LibraryState>((set, get) => {
   // The sidebar's per-folder counts are derived from `meetings`, so a mutation
   // to either list invalidates both. Refreshing both here is what keeps call
@@ -30,12 +35,28 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
     await Promise.all([get().refreshMeetings(), get().refreshFolders()])
   }
 
+  // An MCP agent wrote to the library from outside this process: refetch the
+  // lists and record which notes changed so an open note view can reload.
+  if (!libraryListenerAttached) {
+    libraryListenerAttached = true
+    window.api.on('library:changed', (change) => {
+      void refreshAll()
+      set((s) => ({
+        externallyChanged: {
+          version: s.externallyChanged.version + 1,
+          noteIds: change.noteIds
+        }
+      }))
+    })
+  }
+
   return {
     meetings: [],
     folders: [],
     query: '',
     selectedFolderId: null,
     ready: false,
+    externallyChanged: { version: 0, noteIds: [] },
 
     setQuery: (query) => set({ query }),
     selectFolder: (selectedFolderId) => set({ selectedFolderId }),

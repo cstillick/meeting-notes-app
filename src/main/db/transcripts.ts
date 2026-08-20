@@ -44,8 +44,12 @@ export function getMaxEndMs(meetingId: string): number {
 }
 
 export function getSegments(meetingId: string): TranscriptSegment[] {
+  // ", id" tiebreak: mic and system segments routinely share a start_ms, and
+  // start_ms alone lets tied lines swap order between reads — the MCP server
+  // already orders this way, so the app must match or the same transcript
+  // renders differently in the two surfaces.
   const rows = getDb()
-    .prepare('SELECT * FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms')
+    .prepare('SELECT * FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms, id')
     .all(meetingId) as unknown as SegmentRow[]
   return rows.map((r) => ({
     id: r.id,

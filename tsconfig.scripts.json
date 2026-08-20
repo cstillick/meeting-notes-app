@@ -21,6 +21,7 @@
   "include": [
     "scripts/**/*",
     "src/main/**/*",
+    "src/mcp/**/*",
     "src/shared/**/*",
     "src/renderer/src/editor/markdown.ts",
     "src/renderer/src/editor/markdownToDoc.ts",

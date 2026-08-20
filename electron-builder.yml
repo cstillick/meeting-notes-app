@@ -25,4 +25,10 @@ mac:
     NSAudioCaptureUsageDescription: >-
       Granola Clone records system audio to transcribe what other meeting
       participants say.
+    NSCalendarsUsageDescription: >-
+      Granola Clone reads your calendar so meetings can auto-record when they
+      start.
+    NSCalendarsFullAccessUsageDescription: >-
+      Granola Clone reads your calendar so meetings can auto-record when they
+      start.
 npmRebuild: false

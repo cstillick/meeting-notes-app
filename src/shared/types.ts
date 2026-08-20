@@ -80,6 +80,12 @@ export interface SettingsView {
   model: string
   /** Mute the mic: record only system audio (what the other participants say). */
   systemAudioOnly: boolean
+  /** Start recording automatically when a calendar meeting begins. */
+  calendarAutoRecord: boolean
+  /** Notion integration token present (for Export to Notion). */
+  notionTokenSet: boolean
+  /** Notion page id under which exports are created. */
+  notionParentPageId: string
 }
 
 export interface SettingsUpdate {
@@ -88,6 +94,9 @@ export interface SettingsUpdate {
   voyageKey?: string
   model?: string
   systemAudioOnly?: boolean
+  calendarAutoRecord?: boolean
+  notionToken?: string
+  notionParentPageId?: string
 }
 
 export const DEFAULT_MODEL = 'claude-opus-5'
@@ -227,4 +236,42 @@ export function chatKeyFor(meetingId: string | null, folderId?: string | null): 
   if (meetingId) return meetingId
   if (folderId) return `folder:${folderId}`
   return 'global'
+}
+
+/** Progress of one file-import transcription job, streamed to the renderer. */
+export interface ImportStatus {
+  meetingId: string
+  state: 'transcribing' | 'done' | 'error'
+  message?: string
+}
+
+// --- Knowledge graph ---
+
+export interface GraphNode {
+  id: string
+  label: string
+  kind: 'note' | 'concept' | 'person' | 'organization' | 'topic'
+  /** Notes: folder id (null = unfiled). Entities: undefined. */
+  folderId?: string | null
+  /** Entities: number of notes carrying it. Notes: number of entities. */
+  degree: number
+}
+
+export interface GraphLink {
+  source: string
+  target: string
+  weight: number
+}
+
+export interface GraphData {
+  nodes: GraphNode[]
+  links: GraphLink[]
+}
+
+export interface RelatedNote {
+  id: string
+  title: string
+  score: number
+  /** Names of the shared concepts, the reason these notes are related. */
+  shared: string[]
 }

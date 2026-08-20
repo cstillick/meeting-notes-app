@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useLibraryStore } from '../../stores/libraryStore'
+import { useImportStore } from '../../stores/importStore'
 import ChatDock from '../chat/ChatDock'
+import ExportMenu from '../ExportMenu'
 import FolderSidebar from './FolderSidebar'
 import MeetingList from './MeetingList'
 
@@ -14,6 +16,9 @@ export default function HomeView(): React.JSX.Element {
   const refreshMeetings = useLibraryStore((s) => s.refreshMeetings)
   const refreshFolders = useLibraryStore((s) => s.refreshFolders)
   const createMeeting = useLibraryStore((s) => s.createMeeting)
+  const startPick = useImportStore((s) => s.startPick)
+  const pickErrors = useImportStore((s) => s.pickErrors)
+  const clearPickErrors = useImportStore((s) => s.clearPickErrors)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const selectedFolder = folders.find((f) => f.id === selectedFolderId) ?? null
@@ -55,12 +60,66 @@ export default function HomeView(): React.JSX.Element {
       <header className="drag-region flex items-center justify-between border-b border-stone-200 bg-stone-50/90 px-6 pt-3 pb-3 pl-24">
         <h1 className="text-sm font-semibold tracking-wide text-stone-500">Meetings</h1>
         <div className="flex items-center gap-2">
+          <ExportMenu
+            items={[
+              {
+                label: 'Export as Obsidian vault',
+                hint: selectedFolder
+                  ? `"${selectedFolder.name}" as Markdown with [[wikilinks]]`
+                  : 'Whole library as Markdown with [[wikilinks]]',
+                action: async () => {
+                  const result = await window.api.invoke('export:library', selectedFolderId, 'obsidian')
+                  if (result === null) return null
+                  return result.ok
+                    ? `Wrote ${result.files} files to ${result.path}`
+                    : (result.error ?? 'Export failed')
+                }
+              },
+              {
+                label: 'Export as JSON bundle',
+                hint: 'Machine-readable full export — backup or agent corpus',
+                action: async () => {
+                  const result = await window.api.invoke('export:library', selectedFolderId, 'json')
+                  if (result === null) return null
+                  return result.ok ? `Saved ${result.path}` : (result.error ?? 'Export failed')
+                }
+              },
+              {
+                label: 'Export to Notion',
+                hint: selectedFolder
+                  ? `"${selectedFolder.name}" as Notion pages`
+                  : 'Whole library as Notion pages',
+                action: async () => {
+                  const result = await window.api.invoke('export:notion', {
+                    folderId: selectedFolderId
+                  })
+                  return result.ok
+                    ? `Created ${result.pages} pages: ${result.url}`
+                    : (result.error ?? 'Export failed')
+                }
+              }
+            ]}
+          />
+          <Link
+            to="/graph"
+            title="Knowledge graph — how your notes tie together"
+            className="rounded-md px-2.5 py-1.5 text-sm text-stone-500 hover:bg-stone-200/70"
+          >
+            Graph
+          </Link>
           <Link
             to="/settings"
             className="rounded-md px-2.5 py-1.5 text-sm text-stone-500 hover:bg-stone-200/70"
           >
             Settings
           </Link>
+          <button
+            onClick={() => void startPick()}
+            title="Transcribe an audio or video file into a new note"
+            className="rounded-md px-2.5 py-1.5 text-sm text-stone-500 hover:bg-stone-200/70"
+          >
+            Import
+          </button>
           <button
             onClick={() => void newNote()}
             title="New note (⌘N)"
@@ -87,6 +146,17 @@ export default function HomeView(): React.JSX.Element {
                 className="w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-sm shadow-sm placeholder:text-stone-400 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 focus:outline-none"
               />
             </label>
+
+            {pickErrors.length > 0 && (
+              <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {pickErrors.map((e) => (
+                  <div key={e}>{e}</div>
+                ))}
+                <button onClick={clearPickErrors} className="mt-1 text-xs underline">
+                  Dismiss
+                </button>
+              </div>
+            )}
 
             <MeetingList />
           </div>

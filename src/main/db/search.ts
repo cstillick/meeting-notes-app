@@ -46,7 +46,10 @@ export function reindexMeeting(meetingId: string): void {
   const segments = (
     db
       .prepare(
-        'SELECT channel, text, start_ms, speaker FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms'
+        // ", id" tiebreak: mic and system segments routinely share a start_ms,
+        // and an unstable tie order would shift chunk boundaries (invalidating
+        // embeddings) between reindexes for no textual reason.
+        'SELECT channel, text, start_ms, speaker FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms, id'
       )
       .all(meetingId) as unknown as {
       channel: 'mic' | 'system'
@@ -160,9 +163,14 @@ export function searchMeetings(query: string): MeetingSummary[] {
       .map((t) => `"${t.replace(/"/g, '""')}"*`)
       .join(' ')
     if (!ftsQuery) return []
+    // Ranked, so LIMIT keeps the *best* 100, not an arbitrary 100 in
+    // last-reindex order. Weights match the MCP server (title 10×, body 1×;
+    // meeting_id is UNINDEXED) so the same query ranks the same everywhere.
     ids = (
       db
-        .prepare('SELECT meeting_id FROM search_fts WHERE search_fts MATCH ? LIMIT 100')
+        .prepare(
+          'SELECT meeting_id FROM search_fts WHERE search_fts MATCH ? ORDER BY bm25(search_fts, 0.0, 10.0, 1.0) LIMIT 100'
+        )
         .all(ftsQuery) as { meeting_id: string }[]
     ).map((r) => r.meeting_id)
   } catch (err) {
@@ -171,13 +179,13 @@ export function searchMeetings(query: string): MeetingSummary[] {
   }
   if (ids.length === 0) return []
 
-  // Fetch only the matched meetings (not the whole table), newest first.
+  // Fetch only the matched meetings (not the whole table); display order is
+  // relevance order, restored below from the ranked id list.
   const placeholders = ids.map(() => '?').join(',')
   const rows = db
     .prepare(
       `SELECT id, title, created_at, started_at, ended_at, status, folder_id
-         FROM meetings WHERE id IN (${placeholders})
-        ORDER BY created_at DESC`
+         FROM meetings WHERE id IN (${placeholders})`
     )
     .all(...ids) as {
     id: string
@@ -188,13 +196,16 @@ export function searchMeetings(query: string): MeetingSummary[] {
     status: MeetingSummary['status']
     folder_id: string | null
   }[]
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    createdAt: r.created_at,
-    startedAt: r.started_at,
-    endedAt: r.ended_at,
-    status: r.status,
-    folderId: r.folder_id
-  }))
+  const rank = new Map(ids.map((id, i) => [id, i]))
+  return rows
+    .sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0))
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      createdAt: r.created_at,
+      startedAt: r.started_at,
+      endedAt: r.ended_at,
+      status: r.status,
+      folderId: r.folder_id
+    }))
 }

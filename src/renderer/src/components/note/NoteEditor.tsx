@@ -50,6 +50,19 @@ export default function NoteEditor({
     return undefined
   }, [editor, meetingId])
 
+  // An external writer (an MCP agent) can change this note while it is open;
+  // NoteView reloads and initialContent changes identity. Adopt the new
+  // content only when it is safe — no local save pending and the editor not
+  // focused. A mid-typing clobber would be worse than a moment of staleness:
+  // the user's next autosave wins, and the agent's change shows on reopen.
+  useEffect(() => {
+    if (!editor || saveTimer.current || editor.isFocused) return
+    const incoming = parseContent(initialContent)
+    if (!incoming) return
+    if (JSON.stringify(editor.getJSON()) === JSON.stringify(incoming)) return
+    editor.commands.setContent(incoming)
+  }, [editor, initialContent])
+
   // Flush any pending save when leaving the note. The window can also be torn
   // down without unmounting React (window close / quit), hence pagehide — and
   // quit itself skips pagehide entirely, hence the registry (see flush.ts).

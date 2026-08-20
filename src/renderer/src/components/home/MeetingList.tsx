@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { MeetingSummary } from '@shared/types'
 import { useLibraryStore } from '../../stores/libraryStore'
+import { useImportStore } from '../../stores/importStore'
 import MoveMenu from './MoveMenu'
 
 function formatDuration(startedAt: number | null, endedAt: number | null): string | null {
@@ -29,6 +30,7 @@ function MeetingRow({
   onCloseMenu: () => void
 }): React.JSX.Element {
   const deleteMeeting = useLibraryStore((s) => s.deleteMeeting)
+  const importStatus = useImportStore((s) => s.statuses[meeting.id])
   const status = STATUS_LABEL[meeting.status]
   const duration = formatDuration(meeting.startedAt, meeting.endedAt)
   const title = meeting.title || 'Untitled meeting'
@@ -53,6 +55,19 @@ function MeetingRow({
           </span>
         </div>
         <div className="mt-0.5 flex items-center gap-2 text-xs text-stone-400">
+          {importStatus?.state === 'transcribing' && (
+            <span className="rounded-full bg-sky-100 px-1.5 py-0.5 font-medium text-sky-700">
+              transcribing…
+            </span>
+          )}
+          {importStatus?.state === 'error' && (
+            <span
+              className="rounded-full bg-red-100 px-1.5 py-0.5 font-medium text-red-700"
+              title={importStatus.message}
+            >
+              import failed
+            </span>
+          )}
           {status && (
             <span className={`rounded-full px-1.5 py-0.5 font-medium ${status.cls}`}>
               {status.label}

@@ -7,6 +7,8 @@ import type { Channel, LiveSegment, RecorderStatus } from '@shared/types'
 import { AudioTee } from '../audio/audiotee'
 import { getDeepgramKey, getSystemAudioOnly } from '../settings'
 import { getMeeting, setEnded, setStarted } from '../db/meetings'
+import { withTransaction } from '../db/database'
+import { clearEntitiesStamp } from '../db/entities'
 import { getMaxEndMs, insertSegment } from '../db/transcripts'
 import { reindexMeeting } from '../db/search'
 import { DeepgramSession } from './deepgramSession'
@@ -86,6 +88,10 @@ export class Recorder extends EventEmitter<{
 
   get recording(): boolean {
     return this.state === 'recording'
+  }
+
+  get currentState(): RecorderStatus['state'] {
+    return this.state
   }
 
   private setState(state: RecorderStatus['state'], detail?: string): void {
@@ -396,8 +402,16 @@ export class Recorder extends EventEmitter<{
     this.flushPendingMicFinals()
 
     if (meetingId) {
-      setEnded(meetingId, Date.now())
-      reindexMeeting(meetingId)
+      // One commit: a crash between the status flip and the reindex would
+      // otherwise leave the finished transcript invisible to search and RAG
+      // (startup recovery only reindexes notes stuck in a transient status).
+      // The extraction stamp clears too — the transcript just changed, so the
+      // note's knowledge-graph entities are stale.
+      withTransaction(() => {
+        setEnded(meetingId, Date.now())
+        reindexMeeting(meetingId)
+        clearEntitiesStamp(meetingId)
+      })
     }
     this.meetingId = null
     this.degraded.clear()

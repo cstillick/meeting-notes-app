@@ -3,7 +3,11 @@ import { Link, useParams } from 'react-router-dom'
 import type { Channel, Meeting } from '@shared/types'
 import { useActiveMeetingStore, type Bubble } from '../../stores/activeMeetingStore'
 import { useEnhanceStore } from '../../stores/enhanceStore'
+import { useLibraryStore } from '../../stores/libraryStore'
+import { useImportStore } from '../../stores/importStore'
+import ExportMenu from '../ExportMenu'
 import NoteEditor from './NoteEditor'
+import RelatedNotes from './RelatedNotes'
 import TranscriptPanel from './TranscriptPanel'
 import { EnhancedDoc, MarkdownPreview, StreamingPreview } from './EnhancedView'
 import ChatDock from '../chat/ChatDock'
@@ -187,6 +191,20 @@ export default function NoteView(): React.JSX.Element {
     setTab('enhanced')
   }, [savedVersion, savedFor, id, reload])
 
+  const importStatus = useImportStore((s) => (id ? s.statuses[id] : undefined))
+  const dismissImportError = useImportStore((s) => s.dismissError)
+
+  // Reload when an out-of-process agent (MCP) changed this note. The editor
+  // itself decides whether adopting the new content is safe (NoteEditor).
+  const externallyChanged = useLibraryStore((s) => s.externallyChanged)
+  const seenExternalVersion = useRef(externallyChanged.version)
+  useEffect(() => {
+    if (externallyChanged.version === seenExternalVersion.current) return
+    seenExternalVersion.current = externallyChanged.version
+    if (!id || !externallyChanged.noteIds.includes(id)) return
+    reload()
+  }, [externallyChanged, id, reload])
+
   const isStreamingThis = streamingId === id
 
   async function onEnhance(): Promise<void> {
@@ -261,6 +279,26 @@ export default function NoteView(): React.JSX.Element {
           placeholder="Untitled meeting"
           className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-stone-800 placeholder-stone-400 focus:outline-none"
         />
+        <ExportMenu
+          items={[
+            ...(['md', 'html', 'pdf', 'docx'] as const).map((format) => ({
+              label: `Export as ${format === 'md' ? 'Markdown' : format.toUpperCase()}`,
+              action: async () => {
+                const result = await window.api.invoke('export:note', id, format)
+                if (result === null) return null
+                return result.ok ? `Saved ${result.path}` : (result.error ?? 'Export failed')
+              }
+            })),
+            {
+              label: 'Export to Notion',
+              hint: 'Uses the token and parent page from Settings',
+              action: async () => {
+                const result = await window.api.invoke('export:notion', { noteId: id })
+                return result.ok ? `Created ${result.url}` : (result.error ?? 'Export failed')
+              }
+            }
+          ]}
+        />
         <button
           onClick={() => setShowTranscript((v) => !v)}
           className={`rounded-md px-2.5 py-1.5 text-sm ${
@@ -294,6 +332,20 @@ export default function NoteView(): React.JSX.Element {
         )}
         <RecordButton meetingId={id} />
       </header>
+
+      {importStatus?.state === 'transcribing' && (
+        <div className="border-b border-sky-200 bg-sky-50 px-6 py-1 text-xs text-sky-800">
+          Transcribing the imported recording — the transcript appears here when it finishes.
+        </div>
+      )}
+      {importStatus?.state === 'error' && (
+        <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-6 py-1 text-xs text-red-700">
+          <span>Import failed: {importStatus.message}</span>
+          <button onClick={() => dismissImportError(id)} className="underline">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {statusDetail && recordingMeetingId === id && (
         <div
@@ -365,6 +417,7 @@ export default function NoteView(): React.JSX.Element {
               <p className="text-sm text-stone-400">No enhanced notes yet.</p>
             )}
           </div>
+          <RelatedNotes meetingId={id} />
         </main>
         {showTranscript && (
           <aside className="w-80 shrink-0 border-l border-stone-200 bg-stone-100/60">

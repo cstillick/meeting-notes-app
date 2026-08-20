@@ -91,7 +91,7 @@ function meetingExcerpt(meetingId: string): string {
   const notes = pmToPlainText(row.notes_json)
   const transcript = (
     db
-      .prepare('SELECT text FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms')
+      .prepare('SELECT text FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms, id')
       .all(meetingId) as unknown as { text: string }[]
   )
     .map((r) => r.text)

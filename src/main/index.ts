@@ -6,6 +6,8 @@ import { getDetectPanelUrl } from './detectPanel'
 import { recorder } from './transcription/recorder'
 import { appLog } from './transcription/debugLog'
 import { closeDb } from './db/database'
+import { startControlServer, stopControlServer } from './control'
+import { startCalendarWatcher, stopCalendarWatcher } from './calendar'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -119,9 +121,24 @@ app.on('web-contents-created', (_event, contents) => {
   })
 })
 
+// One instance only. A second copy's startup recovery would flip a live
+// recording's status to 'recorded' with a bogus ended_at (getDb runs
+// recoverTransientStatuses in every process), and two writers on one file
+// surface as SQLITE_BUSY throws in whichever loses the 3 s busy_timeout.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+}
+app.on('second-instance', () => {
+  void showMainWindow()
+})
+
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return
   console.log(`Granola Clone build: ${__BUILD_INFO__.commit} @ ${__BUILD_INFO__.time}`)
   registerIpc()
+  startControlServer()
+  startCalendarWatcher()
   createWindow()
 
   app.on('activate', () => {
@@ -150,6 +167,8 @@ app.on('before-quit', (event) => {
       console.error('quit: recorder.stop failed', err)
     }
     stopMicMonitor()
+    stopCalendarWatcher()
+    stopControlServer()
     closeDb()
     app.exit(0)
   })()
@@ -171,6 +190,11 @@ function crashExit(kind: string, reason: unknown): void {
       stopMicMonitor()
     } catch {
       // already down
+    }
+    try {
+      stopControlServer()
+    } catch {
+      // best-effort; a stale socket is reclaimed on next launch
     }
     try {
       closeDb()

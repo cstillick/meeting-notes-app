@@ -2,10 +2,13 @@ import type {
   ChatMessage,
   ChatSendRequest,
   Folder,
+  GraphData,
+  ImportStatus,
   LiveSegment,
   Meeting,
   MeetingSummary,
   RecorderStatus,
+  RelatedNote,
   SettingsUpdate,
   SettingsView,
   TranscriptSegment
@@ -55,6 +58,39 @@ export interface InvokeMap {
   /** Renderer ack that every pending editor save has been written — main holds
    *  quit (bounded by a timeout) for this after sending app:will-quit. */
   'app:flushed': () => void
+  /** Open a file picker and start transcribing the chosen recordings. Each
+   *  becomes a new note immediately; progress arrives as import:status events.
+   *  null = the user cancelled the picker. */
+  'import:pick': () => { started: { noteId: string; file: string }[]; errors: string[] } | null
+  /** Note id of a recording-start request that arrived while no window was
+   *  loaded (calendar auto-record, an agent's start_recording). The renderer
+   *  asks on mount; events sent before React attaches listeners are lost. */
+  'recording:consumePendingStart': () => string | null
+  /** Export one note to a file; main shows the save dialog. null = cancelled. */
+  'export:note': (
+    noteId: string,
+    format: 'md' | 'html' | 'pdf' | 'docx'
+  ) => { ok: boolean; path?: string; error?: string } | null
+  /** Export the library or one folder as an Obsidian vault (directory) or a
+   *  JSON bundle (file); main shows the picker. null = cancelled. */
+  'export:library': (
+    folderId: string | null,
+    kind: 'obsidian' | 'json'
+  ) => { ok: boolean; path?: string; files?: number; error?: string } | null
+  /** Export a note, a folder, or the whole library to Notion. */
+  'export:notion': (target: { noteId?: string; folderId?: string | null }) => {
+    ok: boolean
+    url?: string
+    pages?: number
+    error?: string
+  }
+  /** The knowledge graph: notes + extracted entities, weighted links.
+   *  null folder = the whole library. */
+  'graph:get': (folderId: string | null) => GraphData
+  /** Notes tied to this one through shared entities, strongest first. */
+  'graph:related': (meetingId: string) => RelatedNote[]
+  /** Clear every extraction stamp and re-extract the whole library. */
+  'graph:rebuild': () => void
 }
 
 /** Renderer → main fire-and-forget (ipcRenderer.send). High-frequency channels. */
@@ -92,6 +128,17 @@ export interface EventMap {
   'chat:error': (err: { chatKey: string; message: string; retryable: boolean }) => void
   /** Quit is imminent: flush pending editor saves, then invoke app:flushed. */
   'app:will-quit': () => void
+  /** An out-of-process agent (MCP) changed the library: refresh lists, and
+   *  views showing one of the named notes should reload it. */
+  'library:changed': (change: { noteIds: string[]; folders: boolean }) => void
+  /** File-import transcription progress for one note. */
+  'import:status': (status: ImportStatus) => void
+  /** Start recording this specific (already-created, already-titled) note —
+   *  calendar auto-record or an agent's start_recording. The renderer owns the
+   *  start because the microphone is captured in the renderer. */
+  'recording:startRequested': (req: { noteId: string }) => void
+  /** Entity extraction finished a pass — an open graph view should refetch. */
+  'graph:changed': () => void
 }
 
 export type InvokeChannel = keyof InvokeMap
@@ -129,7 +176,15 @@ const invokeChannels: Record<InvokeChannel, true> = {
   'chat:history': true,
   'chat:cancel': true,
   'chat:clear': true,
-  'app:flushed': true
+  'app:flushed': true,
+  'import:pick': true,
+  'recording:consumePendingStart': true,
+  'graph:get': true,
+  'graph:related': true,
+  'graph:rebuild': true,
+  'export:note': true,
+  'export:library': true,
+  'export:notion': true
 }
 
 const sendChannels: Record<SendChannel, true> = {
@@ -148,7 +203,11 @@ const eventChannels: Record<EventChannel, true> = {
   'chat:delta': true,
   'chat:done': true,
   'chat:error': true,
-  'app:will-quit': true
+  'app:will-quit': true,
+  'library:changed': true,
+  'import:status': true,
+  'recording:startRequested': true,
+  'graph:changed': true
 }
 
 export const INVOKE_CHANNELS = Object.keys(invokeChannels) as readonly InvokeChannel[]

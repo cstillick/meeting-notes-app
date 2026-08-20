@@ -69,6 +69,18 @@ export const useActiveMeetingStore = create<ActiveMeetingState>((set, get) => {
     })
 
     window.api.on('recorder:status', (status) => {
+      // A stop can originate in main (an agent's stop_recording, quit) —
+      // release the renderer's mic capture whoever ended the recording, or
+      // the orange mic indicator stays lit with nothing recording.
+      if (status.state === 'idle' && micCapture) {
+        micCapture.stop()
+        micCapture = null
+        if (meterTimer) {
+          clearInterval(meterTimer)
+          meterTimer = null
+        }
+        set({ micLevel: 0, micMuted: false, interim: {} })
+      }
       set({
         recorderState: status.state,
         recordingMeetingId: status.meetingId,

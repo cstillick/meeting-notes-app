@@ -140,5 +140,27 @@ export const MIGRATIONS: string[] = [
   // every home render and on every turn of the global chat thread.
   `
   CREATE INDEX idx_meetings_created ON meetings(created_at DESC);
+  `,
+  // v10: knowledge graph. Claude extracts concepts/people/orgs per note into
+  // entities (deduped by a normalized name) with per-note salience weights;
+  // note↔note edges are derived from shared entities at read time. entities_at
+  // NULL marks a note whose extraction is missing or stale — the extractor
+  // drains those, exactly like chunked_at drives the chunk backfill.
+  `
+  CREATE TABLE entities (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    norm TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL DEFAULT 'concept'
+         CHECK (kind IN ('concept','person','organization','topic'))
+  );
+  CREATE TABLE note_entities (
+    meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    entity_id  INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    weight     REAL NOT NULL DEFAULT 0.5,
+    PRIMARY KEY (meeting_id, entity_id)
+  );
+  CREATE INDEX idx_note_entities_entity ON note_entities(entity_id);
+  ALTER TABLE meetings ADD COLUMN entities_at INTEGER;
   `
 ]
