@@ -15,6 +15,7 @@ import { getAnthropicKey, getModelCapabilities } from '../settings'
 import { getMeeting } from '../db/meetings'
 import { getFolder } from '../db/folders'
 import { getSegments } from '../db/transcripts'
+import { speakerNameMap } from '../db/speakers'
 import { getChatHistory, insertChatMessage } from '../db/chats'
 import { promptBudget } from '../enhance/prompt'
 import {
@@ -117,6 +118,7 @@ export class ChatService extends EventEmitter<{
             meeting,
             segments: getSegments(req.meetingId),
             liveFinals: req.liveFinals,
+            names: speakerNameMap(req.meetingId),
             budget: promptBudget(caps, historyChars + CHAT_MEETING_SYSTEM.length)
           }),
           cache_control: { type: 'ephemeral' }

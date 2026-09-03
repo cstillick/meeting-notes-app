@@ -25,6 +25,7 @@
     "src/shared/**/*",
     "src/renderer/src/editor/markdown.ts",
     "src/renderer/src/editor/markdownToDoc.ts",
-    "src/renderer/src/editor/userTextMark.ts"
+    "src/renderer/src/editor/userTextMark.ts",
+    "src/renderer/src/lib/speakers.ts"
   ]
 }

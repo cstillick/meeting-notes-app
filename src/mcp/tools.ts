@@ -9,6 +9,7 @@ import {
   formatTimestamp,
   pmToPlainText,
   speakerLabel,
+  type SpeakerNames,
   type TranscriptLine
 } from '../main/enhance/prompt.ts'
 import { appendMarkdownToDoc, markdownToPmDoc } from './pm.ts'
@@ -38,6 +39,7 @@ import {
   resolveFolder,
   searchNotes,
   searchTranscript,
+  speakerNames,
   entitiesForNote,
   graphEntities,
   hasGraph,
@@ -145,18 +147,50 @@ function clip(text: string, max: number): { text: string; clipped: number } {
 
 /** "[m:ss] [Speaker] text" — the same shape the app's own prompts use, so a
  *  transcript read through MCP and one read by the in-app chat are identical. */
-function transcriptLine(r: SegmentRow): string {
+function transcriptLine(r: SegmentRow, names?: SpeakerNames): string {
   const line: TranscriptLine = {
     channel: r.channel,
     text: r.text,
     startMs: r.startMs,
     speaker: r.speaker
   }
-  return `[${formatTimestamp(r.startMs)}] [${speakerLabel(line)}] ${r.text}`
+  return `[${formatTimestamp(r.startMs)}] [${speakerLabel(line, names)}] ${r.text}`
 }
 
-function transcriptLines(rows: SegmentRow[]): string {
-  return rows.map(transcriptLine).join('\n')
+function transcriptLines(rows: SegmentRow[], names?: SpeakerNames): string {
+  return rows.map((r) => transcriptLine(r, names)).join('\n')
+}
+
+/** One line naming who is in a note, so the model knows which labels are real
+ *  identities the user vouched for and which are just distinct voices. Replaces
+ *  the old fixed claim that "Me" is the user and everyone else is remote —
+ *  false for an in-person recording and for every imported file. */
+function speakerPreamble(labels: string[]): string {
+  if (labels.length === 0) return ''
+  return (
+    `Speakers: ${labels.join(', ')}. ` +
+    'Named speakers were identified by the user and are authoritative. ' +
+    'Numbered ones are distinct voices, not names. ' +
+    '"Me" is the note-taker\'s own microphone, and is absent from recordings ' +
+    'with no note-taker voice, such as imported files and in-person captures.'
+  )
+}
+
+/** The distinct resolved labels in one note, in first-appearance order. */
+function noteSpeakerLabels(rows: SegmentRow[], names?: SpeakerNames): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const r of rows) {
+    const label = speakerLabel(
+      { channel: r.channel, text: r.text, startMs: r.startMs, speaker: r.speaker },
+      names
+    )
+    if (!seen.has(label)) {
+      seen.add(label)
+      out.push(label)
+    }
+  }
+  return out
 }
 
 /** Date bounds arrive as YYYY-MM-DD or a full ISO stamp. A bare date means the
@@ -474,9 +508,10 @@ function noteBody(
       parts.push('\n### Transcript\n(no transcript recorded)')
     } else {
       const rows = getSegments(lib, note.id, 0, INLINE_TRANSCRIPT_LINES)
+      const names = speakerNames(lib, note.id)
       section(
         'Transcript',
-        transcriptLines(rows),
+        transcriptLines(rows, names),
         '(no transcript recorded)',
         total > rows.length
           ? `\n[showing the first ${rows.length} of ${total} lines — use get_transcript for the rest]`
@@ -497,7 +532,10 @@ function renderableSize(
   if (include.includes('enhanced_notes')) n += stripSentinels(note.enhancedMd ?? '').length
   if (include.includes('rough_notes')) n += stripSentinels(pmToPlainText(note.notesJson)).length
   if (include.includes('transcript')) {
-    n += transcriptLines(getSegments(lib, note.id, 0, INLINE_TRANSCRIPT_LINES)).length
+    n += transcriptLines(
+      getSegments(lib, note.id, 0, INLINE_TRANSCRIPT_LINES),
+      speakerNames(lib, note.id)
+    ).length
   }
   return n
 }
@@ -655,7 +693,9 @@ export function getTranscriptTool(lib: Library, args: GetTranscriptArgs): string
   }
   const last = args.offset + rows.length
   const more = last < total ? `\n\n[lines ${last + 1}–${total} not shown — call again with offset: ${last}]` : ''
-  return `${noteHeader(meta)}\n\nTranscript lines ${args.offset + 1}–${last} of ${total}. "Me" is the user; other speakers came from system audio.\n\n${transcriptLines(rows)}${more}`
+  const names = speakerNames(lib, meta.id)
+  const preamble = speakerPreamble(noteSpeakerLabels(rows, names))
+  return `${noteHeader(meta)}\n\nTranscript lines ${args.offset + 1}–${last} of ${total}. ${preamble}\n\n${transcriptLines(rows, names)}${more}`
 }
 
 export interface SearchTranscriptArgs extends DateArgs {
@@ -689,16 +729,20 @@ export function searchTranscriptTool(lib: Library, args: SearchTranscriptArgs): 
   // times and bury the actual excerpts.
   const blocks: string[] = []
   let currentNote: string | null = null
+  // Hits span notes and names are per note, so the map is resolved once per
+  // note as the grouped hits move through them, not once for the whole result.
+  let names: SpeakerNames | undefined
   for (const h of hits) {
     if (h.note.id !== currentNote) {
       currentNote = h.note.id
+      names = speakerNames(lib, h.note.id)
       blocks.push(noteHeader(h.note))
     }
     blocks.push(
       [
-        ...h.before.map((l) => `  ${transcriptLine(l)}`),
-        `> ${transcriptLine(h.line)}`,
-        ...h.after.map((l) => `  ${transcriptLine(l)}`)
+        ...h.before.map((l) => `  ${transcriptLine(l, names)}`),
+        `> ${transcriptLine(h.line, names)}`,
+        ...h.after.map((l) => `  ${transcriptLine(l, names)}`)
       ].join('\n')
     )
   }
@@ -903,7 +947,7 @@ export async function startRecordingTool(lib: Library, args: StartRecordingArgs)
   const noteId = typeof response.noteId === 'string' ? response.noteId : ''
   return [
     `Recording requested: note ${noteId.slice(0, SHORT_ID)} (full id: ${noteId}).`,
-    'The app is starting capture (mic + system audio) — this takes a few seconds and needs microphone permission on the Mac.',
+    'The app is starting capture — this takes a few seconds, and needs microphone permission on the Mac unless the user records system audio only.',
     'Confirm with recording_status; the live transcript is readable with get_transcript while recording runs.'
   ].join('\n')
 }

@@ -9,6 +9,7 @@ import { formatTimestamp, pmToPlainText, speakerLabel } from '../enhance/prompt'
 import { pmToMarkdown } from '../enhance/pmToMarkdown'
 import { getMeeting, listMeetings, listMeetingsInFolder } from '../db/meetings'
 import { getSegments } from '../db/transcripts'
+import { speakerNameMap } from '../db/speakers'
 import { listFolders } from '../db/folders'
 import { listEntitiesForNote, relatedNotes } from '../db/entities'
 
@@ -94,14 +95,21 @@ export function noteToMarkdown(
   }
 
   if (opts.transcript && segments.length > 0) {
+    // One lookup for the whole note. This single call covers md, html, pdf,
+    // docx and the Obsidian vault — export/index.ts routes them all through
+    // noteToMarkdown.
+    const names = speakerNameMap(meeting.id)
     const lines = segments.map(
       (s) =>
-        `[${formatTimestamp(s.startMs)}] **${speakerLabel({
-          channel: s.channel,
-          text: s.text,
-          startMs: s.startMs,
-          speaker: s.speaker
-        })}**: ${s.text}`
+        `[${formatTimestamp(s.startMs)}] **${speakerLabel(
+          {
+            channel: s.channel,
+            text: s.text,
+            startMs: s.startMs,
+            speaker: s.speaker
+          },
+          names
+        )}**: ${s.text}`
     )
     parts.push(`## Transcript\n\n${lines.join('\n')}`)
   }

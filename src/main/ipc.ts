@@ -1,6 +1,7 @@
 import { Notification, app, dialog, ipcMain } from 'electron'
 import { basename } from 'path'
 import type { EventMap, InvokeMap } from '@shared/ipc'
+import type { SpeakerIdentity } from '@shared/types'
 import { getMainWindow, isAppDocument, showMainWindow } from './index'
 import { getSettingsView, updateSettings } from './settings'
 import { recorder } from './transcription/recorder'
@@ -36,6 +37,15 @@ import {
   setMeetingFolder
 } from './db/folders'
 import { getSegments } from './db/transcripts'
+import {
+  clearSpeaker,
+  mergeSpeakers,
+  setSpeakerIsMe,
+  setSpeakerName,
+  setSuggestedName,
+  speakerRoster
+} from './db/speakers'
+import { suggestSpeakers } from './speakers/identify'
 import { appLog } from './transcription/debugLog'
 import { clearChat, getChatHistory } from './db/chats'
 import { getDb, takeRecoveredMeetingIds, withTransaction } from './db/database'
@@ -177,7 +187,7 @@ export function registerIpc(): void {
   handle('meetings:get', (id) => {
     const meeting = getMeeting(id)
     if (!meeting) return null
-    return { meeting, segments: getSegments(id) }
+    return { meeting, segments: getSegments(id), speakers: speakerRoster(id) }
   })
   // Text writes and their reindex commit together (withTransaction): a crash
   // between the two would leave FTS and chunks silently stale, and the chunk
@@ -190,6 +200,45 @@ export function registerIpc(): void {
   })
   handle('meetings:delete', (id) => deleteMeeting(id))
   handle('meetings:setFolder', (id, folderId) => setMeetingFolder(id, folderId))
+
+  // A rename changes no chunk text — the chunker is never given names — so the
+  // reindex here only refreshes the FTS body (which does carry them) and
+  // carryEmbeddings matches every existing vector, issuing no embedding calls.
+  // The broadcast is what makes a second window showing the note relabel.
+  const speakerWrite = (meetingId: string, fn: () => SpeakerIdentity[]): SpeakerIdentity[] => {
+    const rows = withTransaction(() => {
+      const out = fn()
+      reindexMeeting(meetingId)
+      return out
+    })
+    broadcast('library:changed', { noteIds: [meetingId], folders: false })
+    return rows
+  }
+
+  handle('speakers:setName', (meetingId, channel, speaker, name) =>
+    speakerWrite(meetingId, () => setSpeakerName(meetingId, channel, speaker, name))
+  )
+  handle('speakers:clear', (meetingId, channel, speaker) =>
+    speakerWrite(meetingId, () => clearSpeaker(meetingId, channel, speaker))
+  )
+  handle('speakers:setMe', (meetingId, channel, speaker) =>
+    speakerWrite(meetingId, () => setSpeakerIsMe(meetingId, channel, speaker))
+  )
+  handle('speakers:merge', (meetingId, fromIdentityId, intoIdentityId) =>
+    speakerWrite(meetingId, () => mergeSpeakers(meetingId, fromIdentityId, intoIdentityId))
+  )
+  handle('speakers:accept', (meetingId, channel, speaker, name) =>
+    speakerWrite(meetingId, () => setSuggestedName(meetingId, channel, speaker, name))
+  )
+  // Proposals only — nothing is written until the user accepts one, because a
+  // confidently wrong name is worse than no name at all.
+  handle('speakers:suggest', async (meetingId) => {
+    try {
+      return { ok: true, suggestions: await suggestSpeakers(meetingId) }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
 
   handle('folders:list', () => listFolders())
   handle('folders:create', (name) => createFolder(name))
@@ -323,7 +372,7 @@ export function registerIpc(): void {
     })
   }
 
-  handle('recorder:start', (meetingId) => recorder.start(meetingId))
+  handle('recorder:start', (meetingId, source) => recorder.start(meetingId, source))
   handle('recorder:stop', () => recorder.stop())
 
   handle('import:pick', async () => {

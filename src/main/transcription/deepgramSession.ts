@@ -1,11 +1,24 @@
 // One Deepgram streaming connection for one audio channel (mic or system).
-// Channel identity maps to speakers: mic = "Me"; the system channel is
-// diarized, so each result may carry a speaker index ("Speaker 1", ...).
+// Whether a channel is diarized is the Recorder's call, not the channel's: a
+// remote meeting puts one voice on the mic, an in-person one puts the whole
+// room there. Diarized results carry a speaker index, which Deepgram restarts
+// at 0 on every reconnect — hence speakerEpoch below.
 import { DeepgramClient } from '@deepgram/sdk'
 import { EventEmitter } from 'events'
 import type { Channel } from '@shared/types'
 
 type V1Socket = Awaited<ReturnType<DeepgramClient['listen']['v1']['connect']>>
+
+/** Per-connection transcription settings. Defaults keep the historical shape:
+ *  system diarized, mic not, no endpointing override. */
+export interface SessionOptions {
+  diarize: boolean
+  /** ms of silence that ends an utterance. Deepgram's default is 10ms, which
+   *  chops a lecturer's thinking pauses into many short finals — and a final's
+   *  length IS the diarization granularity you see, so short finals mean small,
+   *  low-quality speaker windows and flip-flopping labels. Omitted = default. */
+  endpointingMs?: number
+}
 
 export interface SessionResult {
   text: string
@@ -13,8 +26,12 @@ export interface SessionResult {
   startMs: number
   endMs: number
   isFinal: boolean
-  /** Diarized speaker index (system channel only; indices reset per connection). */
+  /** Diarized speaker index, meaningful only within one speakerEpoch. */
   speaker?: number
+  /** Which connection produced `speaker`. Deepgram restarts speaker numbering
+   *  at 0 on every reconnect, so an index means nothing across epochs; the
+   *  Recorder maps (epoch, index) onto an index that is stable for the note. */
+  speakerEpoch?: number
   /** Mean word confidence (0–1), when the result carries word data. */
   confidence?: number
 }
@@ -50,6 +67,11 @@ export class DeepgramSession extends EventEmitter<{
 }> {
   private socket: V1Socket | null = null
   private connEpoch = 0
+  /** Sockets opened on this session; the first is not a reconnect. */
+  private opens = 0
+  /** Bumped on every reconnect, so speaker indices from different connections
+   *  never collide in the Recorder's allocator. */
+  private diarEpoch = 0
   private awaitingFirstAudio = true
   private lastSentAt = 0
   private keepAliveTimer: NodeJS.Timeout | null = null
@@ -60,7 +82,8 @@ export class DeepgramSession extends EventEmitter<{
 
   constructor(
     private apiKey: string,
-    private label: Channel
+    private label: Channel,
+    private opts: SessionOptions = { diarize: label === 'system' }
   ) {
     super()
   }
@@ -69,6 +92,8 @@ export class DeepgramSession extends EventEmitter<{
     this.stopping = false
     this.isDead = false
     this.keepAliveStrikes = 0
+    this.opens = 0
+    this.diarEpoch = 0
     const client = new DeepgramClient({ apiKey: this.apiKey })
     const socket = await client.listen.v1.connect({
       model: 'nova-3',
@@ -78,8 +103,18 @@ export class DeepgramSession extends EventEmitter<{
       interim_results: 'true',
       smart_format: 'true',
       punctuate: 'true',
-      // Only the system channel carries multiple voices; the mic is always "Me".
-      diarize: this.label === 'system' ? 'true' : 'false',
+      // Which channels carry multiple voices depends on the recording: an
+      // in-person note puts the whole room on the mic. The Recorder decides per
+      // note from meetings.audio_source.
+      //
+      // Do NOT send diarize_model here: streaming has no such parameter (it is
+      // absent from V1Client.ConnectArgs and the API rejects it with a 400), so
+      // the websocket path is pinned to Deepgram's v1 diarizer. The batch
+      // importer, which can select v2, is the higher-quality path.
+      diarize: this.opts.diarize ? 'true' : 'false',
+      ...(this.opts.endpointingMs === undefined
+        ? {}
+        : { endpointing: String(this.opts.endpointingMs) }),
       Authorization: `token ${this.apiKey}`
     })
     this.socket = socket
@@ -94,6 +129,9 @@ export class DeepgramSession extends EventEmitter<{
       // anchor; sendAudio() sets it on the first chunk.
       this.connEpoch = Date.now()
       this.awaitingFirstAudio = true
+      // Speaker numbering restarts with the connection, so anything after the
+      // first open is a new namespace.
+      if (this.opens++ > 0) this.diarEpoch += 1
     })
 
     socket.on('message', (message) => {
@@ -115,6 +153,7 @@ export class DeepgramSession extends EventEmitter<{
             endMs: this.connEpoch + group.end * 1000,
             isFinal: true,
             speaker: group.speaker,
+            speakerEpoch: this.diarEpoch,
             confidence: group.confidence
           })
         }
@@ -128,6 +167,7 @@ export class DeepgramSession extends EventEmitter<{
         endMs: this.connEpoch + (message.start + message.duration) * 1000,
         isFinal,
         speaker: lastSpeaker,
+        speakerEpoch: this.diarEpoch,
         confidence: meanConfidence(words)
       })
     })

@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import type { Meeting, MeetingStatus, MeetingSummary } from '@shared/types'
+import type { AudioSource, Meeting, MeetingStatus, MeetingSummary } from '@shared/types'
 import { getDb } from './database'
 
 interface MeetingRow {
@@ -10,6 +10,7 @@ interface MeetingRow {
   ended_at: number | null
   status: MeetingStatus
   folder_id: string | null
+  audio_source: AudioSource
   notes_json: string
   enhanced_json: string | null
   enhanced_md: string | null
@@ -25,6 +26,7 @@ function toMeeting(row: MeetingRow): Meeting {
     endedAt: row.ended_at,
     status: row.status,
     folderId: row.folder_id,
+    audioSource: row.audio_source,
     notesJson: row.notes_json,
     enhancedJson: row.enhanced_json,
     enhancedMd: row.enhanced_md,
@@ -58,6 +60,12 @@ export function createMeeting(): Meeting {
     .prepare('INSERT INTO meetings (id, title, created_at) VALUES (?, ?, ?)')
     .run(id, '', now)
   return getMeeting(id)!
+}
+
+/** Record what a recording actually captured. Stamped at start(), next to
+ *  setStarted, because the mode cannot change once the sockets are open. */
+export function setAudioSource(id: string, source: AudioSource): void {
+  getDb().prepare('UPDATE meetings SET audio_source = ? WHERE id = ?').run(source, id)
 }
 
 export function getMeeting(id: string): Meeting | null {

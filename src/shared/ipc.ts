@@ -1,4 +1,6 @@
 import type {
+  AudioSource,
+  Channel,
   ChatMessage,
   ChatSendRequest,
   Folder,
@@ -11,6 +13,7 @@ import type {
   RelatedNote,
   SettingsUpdate,
   SettingsView,
+  SpeakerIdentity,
   TranscriptSegment
 } from './types'
 
@@ -18,7 +21,14 @@ import type {
 export interface InvokeMap {
   'meetings:create': () => Meeting
   'meetings:list': () => MeetingSummary[]
-  'meetings:get': (id: string) => { meeting: Meeting; segments: TranscriptSegment[] } | null
+  'meetings:get': (
+    id: string
+  ) => {
+    meeting: Meeting
+    segments: TranscriptSegment[]
+    /** Every distinct voice in the transcript, named or not. */
+    speakers: SpeakerIdentity[]
+  } | null
   'meetings:updateTitle': (id: string, title: string) => void
   'meetings:delete': (id: string) => void
   /** Move a note into a folder, or null to unfile it. */
@@ -29,7 +39,12 @@ export interface InvokeMap {
   'folders:rename': (id: string, name: string) => void
   /** Delete a folder. Its notes are unfiled (kept), not deleted. */
   'folders:delete': (id: string) => void
-  'recorder:start': (meetingId: string) => { ok: boolean; error?: string }
+  /** `source` is the note's own capture choice; omitted falls back to the
+   *  user's default. It cannot be changed once recording has started. */
+  'recorder:start': (
+    meetingId: string,
+    source?: AudioSource
+  ) => { ok: boolean; error?: string }
   'recorder:stop': () => void
   'enhance:start': (meetingId: string) => { ok: boolean; error?: string }
   'enhance:cancel': () => void
@@ -42,6 +57,41 @@ export interface InvokeMap {
   /** Persist a manual edit to the enhanced doc (no re-enhance / re-title). */
   'enhanced:save': (id: string, enhancedJson: string) => void
   'search:query': (q: string) => MeetingSummary[]
+  /** Name one voice. Applies retroactively to every line already stored and
+   *  every line still to arrive — names live on the roster, never on a segment.
+   *  All four return the note's refreshed roster. */
+  'speakers:setName': (
+    meetingId: string,
+    channel: Channel,
+    speaker: number,
+    name: string
+  ) => SpeakerIdentity[]
+  /** Forget a name; the voice falls back to its generated label. */
+  'speakers:clear': (meetingId: string, channel: Channel, speaker: number) => SpeakerIdentity[]
+  /** Mark a voice as the note-taker. At most one per note. */
+  'speakers:setMe': (meetingId: string, channel: Channel, speaker: number) => SpeakerIdentity[]
+  /** "These two voices are one person" — the fix for a diarizer split, or for
+   *  the fresh numbering a reconnect hands the same human. */
+  'speakers:merge': (
+    meetingId: string,
+    fromIdentityId: number,
+    intoIdentityId: number
+  ) => SpeakerIdentity[]
+  /** Accept one proposal from speakers:suggest. Separate from setName so the
+   *  roster can show that a name came from the model and has not been vetted. */
+  'speakers:accept': (
+    meetingId: string,
+    channel: Channel,
+    speaker: number,
+    name: string
+  ) => SpeakerIdentity[]
+  /** Ask Claude to propose names from the transcript's own self-introductions.
+   *  Returns proposals and writes nothing; accepting one calls speakers:accept. */
+  'speakers:suggest': (meetingId: string) => {
+    ok: boolean
+    error?: string
+    suggestions?: { channel: Channel; speaker: number; name: string; reason: string }[]
+  }
   /** Buttons on the floating "meeting detected" panel. */
   'detect:action': (action: 'start' | 'dismiss') => void
   /** True once if a detect-panel start is waiting for a freshly created window.
@@ -168,6 +218,12 @@ const invokeChannels: Record<InvokeChannel, true> = {
   'enhance:saveResult': true,
   'enhanced:save': true,
   'search:query': true,
+  'speakers:setName': true,
+  'speakers:clear': true,
+  'speakers:setMe': true,
+  'speakers:merge': true,
+  'speakers:accept': true,
+  'speakers:suggest': true,
   'detect:action': true,
   'detect:consumePending': true,
   'settings:get': true,

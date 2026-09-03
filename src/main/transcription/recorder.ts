@@ -3,13 +3,13 @@
 // Deepgram sessions, persists final segments, and streams everything live to
 // the renderer. PCM exists only in memory and the outbound websockets.
 import { EventEmitter } from 'events'
-import type { Channel, LiveSegment, RecorderStatus } from '@shared/types'
+import type { AudioSource, Channel, LiveSegment, RecorderStatus } from '@shared/types'
 import { AudioTee } from '../audio/audiotee'
-import { getDeepgramKey, getSystemAudioOnly } from '../settings'
-import { getMeeting, setEnded, setStarted } from '../db/meetings'
+import { getAudioSource, getDeepgramKey } from '../settings'
+import { getMeeting, setAudioSource, setEnded, setStarted } from '../db/meetings'
 import { withTransaction } from '../db/database'
 import { clearEntitiesStamp } from '../db/entities'
-import { getMaxEndMs, insertSegment } from '../db/transcripts'
+import { getMaxEndMs, getMaxSpeaker, insertSegment, segmentExists } from '../db/transcripts'
 import { reindexMeeting } from '../db/search'
 import { DeepgramSession } from './deepgramSession'
 import { MockDeepgramSession } from './mockSession'
@@ -68,6 +68,25 @@ export class Recorder extends EventEmitter<{
    *  reconnect can move timestamps backwards; clamp to keep order stable. */
   private lastFinalStart: Partial<Record<Channel, number>> = {}
   private suppressor = new EchoSuppressor()
+  /** Cross-channel echo is only possible when BOTH channels are live: it is
+   *  remote audio played through the speakers and re-captured by the mic. With
+   *  one channel there is nothing to match against, so the suppressor and the
+   *  mic-final hold it needs are skipped entirely rather than run empty. */
+  private wantEcho = true
+  /** Whether this recording puts several voices on the mic (an in-person note). */
+  private micDiarize = false
+  /** Deepgram numbers speakers per connection: a reconnect restarts at 0, and a
+   *  re-recording opens fresh sockets, so a raw index means nothing outside one
+   *  (channel, epoch). Map each (epoch, raw) pair onto an index that is unique
+   *  within (meeting, channel). Erring toward a SPLIT is deliberate: the user
+   *  can merge two chips into one person, but a silent merge of two humans is
+   *  unfixable — their words are already interleaved under one name. */
+  private speakerIds: Partial<Record<Channel, Map<string, number>>> = {}
+  private nextSpeakerId: Partial<Record<Channel, number>> = {}
+  /** Whether any system speech has arrived. Drives the "recording in person?"
+   *  nudge, and nothing else — never an automatic mode switch. */
+  private sawSystemFinal = false
+  private noSystemTimer: NodeJS.Timeout | null = null
   /** Capture sources that died mid-recording. Reported on every status emit so
    *  the renderer can keep the warning up; the state stays 'recording'. */
   private degraded = new Set<Channel>()
@@ -81,6 +100,15 @@ export class Recorder extends EventEmitter<{
   /** How far past the elapsed recording time a final's start may still be
    *  believable (network lag, clock jitter) before it is treated as broken. */
   private static readonly TIMESTAMP_SLACK_MS = 60_000
+  /** Silence that ends an utterance on a diarized mic. Deepgram's default is
+   *  10ms, which chops a lecturer's mid-sentence pauses into many short finals;
+   *  a final's length is the diarization window you actually see, so short ones
+   *  cluster badly and the label flip-flops. Applied only to a diarized mic, so
+   *  the call path's segmentation — and its echo timing — is untouched. */
+  private static readonly ROOM_ENDPOINTING_MS = 800
+  /** How long a 'both' recording may hear nothing from the system channel
+   *  before offering the in-person nudge. */
+  private static readonly NO_SYSTEM_NUDGE_MS = 45_000
 
   get currentMeetingId(): string | null {
     return this.meetingId
@@ -122,7 +150,10 @@ export class Recorder extends EventEmitter<{
     this.emit('segment', { ...segment, meetingId })
   }
 
-  async start(meetingId: string): Promise<{ ok: boolean; error?: string }> {
+  /** @param source what to capture. Omitted = the user's default setting; the
+   *  renderer passes the note's own choice, because it must open the microphone
+   *  with matching constraints before main is even asked. */
+  async start(meetingId: string, source?: AudioSource): Promise<{ ok: boolean; error?: string }> {
     if (this.state !== 'idle') {
       return { ok: false, error: 'Already recording' }
     }
@@ -139,6 +170,10 @@ export class Recorder extends EventEmitter<{
     this.degraded.clear()
     this.suppressor.reset()
     this.clearPendingMicFinals()
+    this.speakerIds = {}
+    this.nextSpeakerId = {}
+    this.sawSystemFinal = false
+    this.clearNoSystemTimer()
     // Resume the transcript past any existing segments: re-recording a note
     // should append, not overwrite/interleave the earlier session (whose rows
     // would also collide under idx_segments_unique and be silently dropped).
@@ -151,15 +186,28 @@ export class Recorder extends EventEmitter<{
     // would stamp those early results hours into the future.
     this.startedAt = Date.now()
 
+    const audioSource = source ?? getAudioSource()
+    // Everything about the shape of this recording follows from the source, and
+    // none of it can be changed later: diarize is a connect-time Deepgram
+    // parameter and a Core Audio tap cannot be un-spawned.
+    const wantMic = audioSource !== 'system'
+    const wantSystem = audioSource !== 'room'
+    this.micDiarize = audioSource === 'room' || audioSource === 'room_call'
+    this.wantEcho = wantMic && wantSystem
+
     try {
-      // "System audio only" mutes the mic: skip its Deepgram session entirely.
-      // The renderer also skips mic capture, so no mic PCM is sent — and
-      // onMicChunk no-ops anyway if a late chunk slips in (sessions.mic is unset).
+      // A muted mic skips its Deepgram session entirely; the renderer also skips
+      // mic capture, so no PCM is sent — and onMicChunk no-ops anyway if a late
+      // chunk slips in (sessions.mic is unset).
       const Ctor = USE_MOCK ? MockDeepgramSession : DeepgramSession
-      const system = new Ctor(apiKey, 'system')
-      this.sessions = getSystemAudioOnly()
-        ? { system }
-        : { mic: new Ctor(apiKey, 'mic'), system }
+      const system = wantSystem ? new Ctor(apiKey, 'system', { diarize: true }) : null
+      const mic = wantMic
+        ? new Ctor(apiKey, 'mic', {
+            diarize: this.micDiarize,
+            endpointingMs: this.micDiarize ? Recorder.ROOM_ENDPOINTING_MS : undefined
+          })
+        : null
+      this.sessions = { ...(mic ? { mic } : {}), ...(system ? { system } : {}) }
 
       for (const [channel, session] of Object.entries(this.sessions) as [
         Channel,
@@ -181,7 +229,10 @@ export class Recorder extends EventEmitter<{
       // audio. Chunks that land before the socket opens are dropped by
       // sendAudio's readyState guard; the timeline anchors on the first chunk
       // that actually goes out.
-      if (!USE_MOCK) {
+      // No tap at all in a pure in-person recording: there is nothing to
+      // capture, and a running tap would report "system audio capture stopped"
+      // for a channel the user never asked for.
+      if (!USE_MOCK && system) {
         this.audiotee = new AudioTee()
         this.audiotee.on('chunk', (buf) => system.sendAudio(buf))
         this.audiotee.on('status', (msg) => this.emitStatus(this.state, msg))
@@ -194,10 +245,27 @@ export class Recorder extends EventEmitter<{
       await Promise.all(Object.values(this.sessions).map((s) => s.start()))
 
       setStarted(meetingId, this.startedAt)
+      setAudioSource(meetingId, audioSource)
       this.setState('recording')
-      echoLog(`start meeting=${meetingId} build=${buildStamp()}`)
+      echoLog(`start meeting=${meetingId} source=${audioSource} build=${buildStamp()}`)
+      // A user recording a lecture on the default mode gets today's broken
+      // behaviour — everything as one "Me" — and nothing tells them why. Offer
+      // the fix rather than guessing: the mode cannot be switched in place, so
+      // the renderer turns this into an explicit stop-and-restart, which
+      // baseOffsetMs makes append rather than interleave.
+      if (audioSource === 'both') {
+        this.noSystemTimer = setTimeout(() => {
+          if (!this.sawSystemFinal && this.state === 'recording') {
+            this.emitStatus(
+              this.state,
+              'No system audio yet — recording in person? Restart this note in In-person mode.'
+            )
+          }
+        }, Recorder.NO_SYSTEM_NUDGE_MS)
+      }
       return { ok: true }
     } catch (err) {
+      this.clearNoSystemTimer()
       this.audiotee?.stop()
       this.audiotee = null
       // Clear the meeting before flushing: teardown lets the sessions deliver
@@ -216,6 +284,42 @@ export class Recorder extends EventEmitter<{
     if (this.state === 'recording') this.sessions.mic?.sendAudio(chunk)
   }
 
+  /** Map one connection's raw speaker index onto an index that is stable for
+   *  this note and channel. Seeded lazily from what the note already holds, so
+   *  a second recording on the same note cannot reuse — and therefore rename —
+   *  a speaker from the first. Lazy rather than in start() because the stress
+   *  suites attach to a Recorder without calling it. */
+  private stableSpeaker(
+    channel: Channel,
+    epoch: number,
+    raw: number | undefined,
+    // Only a final may allocate. An interim's speaker comes from the LAST WORD
+    // of a partial result — the single most misattributed value the pipeline
+    // handles, and exactly the flicker groupWordsBySpeaker() smooths away on
+    // finals. Letting an interim allocate would burn a stable index on a
+    // phantom speaker that no row ever carries, permanently shifting every real
+    // speaker's number: a two-person lecture labelled "Speaker 3"/"Speaker 4".
+    // So an interim resolves through the map and, on a miss, goes out unlabelled
+    // for the ~2s until its final lands and assigns the real index.
+    allocate: boolean
+  ): number | undefined {
+    if (raw === undefined || !this.meetingId) return undefined
+    let map = this.speakerIds[channel]
+    if (!map) {
+      map = new Map()
+      this.speakerIds[channel] = map
+      this.nextSpeakerId[channel] = getMaxSpeaker(this.meetingId, channel) + 1
+    }
+    const key = `${epoch}:${raw}`
+    const hit = map.get(key)
+    if (hit !== undefined) return hit
+    if (!allocate) return undefined
+    const next = this.nextSpeakerId[channel] ?? 0
+    map.set(key, next)
+    this.nextSpeakerId[channel] = next + 1
+    return next
+  }
+
   private onResult(
     channel: Channel,
     r: {
@@ -224,6 +328,7 @@ export class Recorder extends EventEmitter<{
       endMs: number
       isFinal: boolean
       speaker?: number
+      speakerEpoch?: number
       confidence?: number
     }
   ): void {
@@ -232,14 +337,16 @@ export class Recorder extends EventEmitter<{
     // both channels shift by the same constant, so echo time-matching is intact.
     const startMs = this.baseOffsetMs + Math.max(0, r.startMs - this.startedAt)
     const endMs = Math.max(startMs, this.baseOffsetMs + (r.endMs - this.startedAt))
+    const speaker = this.stableSpeaker(channel, r.speakerEpoch ?? 0, r.speaker, r.isFinal)
 
     if (channel === 'system') {
+      if (r.text.trim()) this.sawSystemFinal = true
       // Every system result (interims too — they arrive seconds early) feeds
       // the echo matcher, then retracts any held mic final it now exposes.
       this.suppressor.observeSystem(r.text, startMs, endMs)
       this.retractMatchedPending()
       if (r.isFinal) {
-        this.commitFinal(channel, r.text, startMs, endMs, r.speaker)
+        this.commitFinal(channel, r.text, startMs, endMs, speaker)
       } else {
         this.emitSegment({
           channel,
@@ -247,7 +354,7 @@ export class Recorder extends EventEmitter<{
           startMs,
           endMs,
           isFinal: false,
-          speaker: r.speaker
+          speaker
         })
       }
       return
@@ -256,11 +363,22 @@ export class Recorder extends EventEmitter<{
     // Mic: anything that duplicates overlapping system speech is acoustic
     // echo of remote audio (speakers → mic), not the user talking.
     if (!r.isFinal) {
-      if (this.suppressor.isEcho(r.text, startMs, endMs)) {
+      if (this.wantEcho && this.suppressor.isEcho(r.text, startMs, endMs)) {
         this.emitSuppressed(startMs, endMs, false)
       } else {
-        this.emitSegment({ channel, text: r.text, startMs, endMs, isFinal: false })
+        // Forward the speaker: without it a live in-person bubble is unlabelled
+        // until its final lands seconds later and the caption jumps.
+        this.emitSegment({ channel, text: r.text, startMs, endMs, isFinal: false, speaker })
       }
+      return
+    }
+
+    // With no system channel the suppressor's entry list is only ever filled by
+    // observeSystem, so coverage is 0 and every verdict is false. Holding the
+    // final for 3.5s would be pure latency on a check that cannot fire — and in
+    // a lecture that is 3.5s of lag on every sentence anyone speaks.
+    if (!this.wantEcho) {
+      this.commitFinal(channel, r.text, startMs, endMs, speaker)
       return
     }
 
@@ -272,7 +390,7 @@ export class Recorder extends EventEmitter<{
       text: r.text,
       startMs,
       endMs,
-      speaker: r.speaker,
+      speaker,
       confidence: r.confidence,
       timer: setTimeout(() => this.flushMicFinal(pending), Recorder.MIC_FINAL_HOLD_MS)
     }
@@ -302,6 +420,12 @@ export class Recorder extends EventEmitter<{
       startMs += shift
       endMs += shift
     }
+    // idx_segments_unique keys on COALESCE(speaker, -1), so a retransmitted
+    // final whose diarized index flickered — which streaming diarization does
+    // on replays — is a DIFFERENT key, and INSERT OR IGNORE would accept it as
+    // a second copy of the same sentence. That path was unreachable only while
+    // every mic row was NULL; diarizing the mic opens it.
+    if (segmentExists(this.meetingId, channel, startMs, endMs, text)) return
     // A retransmitted final is dropped by the unique index; emitting it anyway
     // would show the sentence twice live and once after reload.
     if (!insertSegment(this.meetingId, channel, text, startMs, endMs, speaker ?? null)) return
@@ -387,10 +511,18 @@ export class Recorder extends EventEmitter<{
     this.pendingMicFinals = []
   }
 
+  private clearNoSystemTimer(): void {
+    if (this.noSystemTimer) {
+      clearTimeout(this.noSystemTimer)
+      this.noSystemTimer = null
+    }
+  }
+
   async stop(): Promise<void> {
     if (this.state !== 'recording' && this.state !== 'starting') return
     const meetingId = this.meetingId
     this.setState('stopping')
+    this.clearNoSystemTimer()
 
     // Stop audio sources first, then let the sessions flush trailing finals.
     this.audiotee?.stop()

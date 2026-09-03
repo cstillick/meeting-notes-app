@@ -96,10 +96,28 @@ export function syncNoteIndexes(db: DatabaseSync, meetingId: string): void {
   const segments = db
     .prepare('SELECT text FROM transcript_segments WHERE meeting_id = ? ORDER BY start_ms, id')
     .all(meetingId) as unknown as { text: string }[]
+  // Twin of the body built in src/main/db/search.ts — same composition, same
+  // conditional tail, so a note indexed here and one reindexed by the app are
+  // byte-identical. Assigned speaker names are the tail; a note this server
+  // creates has none, but the shape must still match.
+  // The gate above admits a v10 library, which predates the roster tables — so
+  // probe rather than assume, exactly as openLibrary does for folders.
+  const hasRoster = !!db
+    .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'speaker_identities'")
+    .get()
+  const names = hasRoster
+    ? (db
+        .prepare(
+          `SELECT DISTINCT name FROM speaker_identities
+            WHERE meeting_id = ? AND name IS NOT NULL AND name <> ''`
+        )
+        .all(meetingId) as unknown as { name: string }[])
+    : []
   const body = [
     pmToText(meeting.notes_json),
     meeting.enhanced_md ?? '',
-    segments.map((s) => s.text).join(' ')
+    segments.map((s) => s.text).join(' '),
+    ...(names.length > 0 ? [names.map((n) => n.name).join(' ')] : [])
   ].join(' ')
   if (meeting.fts_rowid !== null) {
     db.prepare('DELETE FROM search_fts WHERE rowid = ?').run(meeting.fts_rowid)

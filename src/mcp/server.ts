@@ -80,7 +80,7 @@ function lib(): Library {
 const server = new McpServer(
   { name: 'notetaker', version: '0.2.0' },
   {
-    instructions: `The user's Notetaker library: everything they recorded, the transcript of what was said (their microphone is "Me", other voices come from system audio), the rough notes they typed at the time, and the AI-enhanced notes written afterwards. Notes are organised into folders.
+    instructions: `The user's Notetaker library: everything they recorded, the transcript of what was said (speakers are labelled — a name the user assigned, "Me" for their own microphone when it carried one voice, or a numbered voice the diarizer separated), the rough notes they typed at the time, and the AI-enhanced notes written afterwards. Notes are organised into folders.
 
 Use these tools whenever the user refers to a meeting, a call, a class, a lecture, or "my notes" — including questions they may not realise are answerable, like what someone committed to or when a topic last came up.
 
@@ -259,7 +259,7 @@ server.registerTool(
   {
     title: 'Get transcript',
     description:
-      'The verbatim transcript of one note, as timestamped speaker-labelled lines ("Me" is the user; other speakers were captured from system audio). Paged — the result says how many lines remain and which offset to ask for next.',
+      'The verbatim transcript of one note, as timestamped speaker-labelled lines. The result names the note\'s speakers: assigned names are authoritative, numbered ones are distinct voices rather than names, and an in-person or imported recording has no "Me" at all. Paged — the result says how many lines remain and which offset to ask for next.',
     inputSchema: {
       note_id: z.string().min(1).describe('Note id from a search or list result (a prefix works).'),
       offset: z.number().int().min(0).default(0).describe('First transcript line to return.'),
@@ -492,7 +492,7 @@ if (WRITES_ENABLED) {
     {
       title: 'Start recording',
       description:
-        'Start recording a meeting NOW on this Mac (microphone + system audio, live transcription). Creates a titled note and begins capture — the app must be running, and one recording runs at a time. Use when the user asks to record, or when a meeting is starting that they want captured. Confirm the capture took with recording_status.',
+        'Start recording a meeting NOW on this Mac, live transcribed. What is captured — microphone, system audio, or both, and whether the microphone is separated into several voices — follows the user\'s own audio-source setting. Creates a titled note and begins capture — the app must be running, and one recording runs at a time. Use when the user asks to record, or when a meeting is starting that they want captured. Confirm the capture took with recording_status.',
       inputSchema: {
         title: z.string().optional().describe('Title for the meeting note.'),
         folder: z
@@ -522,7 +522,7 @@ if (WRITES_ENABLED) {
     {
       title: 'Import a recording',
       description:
-        'Transcribe a local audio or video file (mp3, wav, m4a, flac, ogg, mp4, mov, webm, mkv…) into a new note, with speaker diarization. Requires the Granola Clone app to be RUNNING — transcription happens inside it with its Deepgram key. Returns immediately with the new note id; the transcript lands on the note when transcription finishes.',
+        'Transcribe a local audio or video file (mp3, wav, m4a, flac, ogg, mp4, mov, webm, mkv…) into a new note, with speaker diarization. The resulting speakers are numbered voices the user can name in the app, exactly like a live recording\'s. Requires the Granola Clone app to be RUNNING — transcription happens inside it with its Deepgram key. Returns immediately with the new note id; the transcript lands on the note when transcription finishes.',
       inputSchema: {
         path: z.string().min(1).describe('Absolute path to the audio/video file on this Mac.'),
         title: z.string().optional().describe('Title for the note. Defaults to the file name.'),

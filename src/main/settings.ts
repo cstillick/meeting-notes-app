@@ -2,9 +2,11 @@ import { app, safeStorage } from 'electron'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import {
+  AUDIO_SOURCES,
   DEFAULT_MODEL,
   DEFAULT_THEME,
   modelCapabilities,
+  type AudioSource,
   type ModelOption,
   type SettingsUpdate,
   type SettingsView,
@@ -18,7 +20,11 @@ interface StoredSettings {
   voyageKeyEnc: string | null
   model: string
   theme: Theme
-  /** Record system audio only — skip the microphone entirely. */
+  /** Default capture mode for new recordings. Each note can override it before
+   *  Record and stores what it actually used (meetings.audio_source). */
+  audioSource: AudioSource
+  /** @deprecated Superseded by audioSource. Still read from older files once,
+   *  in load(), so a user who muted their mic does not silently get it back. */
   systemAudioOnly: boolean
   /** Start recording automatically when a calendar meeting begins. */
   calendarAutoRecord: boolean
@@ -34,6 +40,7 @@ const DEFAULTS: StoredSettings = {
   voyageKeyEnc: null,
   model: DEFAULT_MODEL,
   theme: DEFAULT_THEME,
+  audioSource: 'both',
   systemAudioOnly: false,
   calendarAutoRecord: false,
   notionTokenEnc: null,
@@ -52,8 +59,21 @@ function load(): StoredSettings {
   if (cache) return cache
   try {
     if (existsSync(settingsPath())) {
-      cache = { ...DEFAULTS, ...JSON.parse(readFileSync(settingsPath(), 'utf8')) }
-      return cache!
+      const raw = JSON.parse(readFileSync(settingsPath(), 'utf8')) as Partial<StoredSettings>
+      const merged = { ...DEFAULTS, ...raw }
+      // A file written before audioSource existed carries only the boolean, and
+      // the spread above would drop it — reopening the microphone in meetings
+      // the user had deliberately muted it for. Honour it once here; the next
+      // settings write persists the new field. Never write from load(): it runs
+      // on every accessor.
+      if (raw.audioSource === undefined && raw.systemAudioOnly === true) {
+        merged.audioSource = 'system'
+      }
+      // A hand-edited or future-version file must not put the recorder into a
+      // mode it cannot interpret.
+      if (!AUDIO_SOURCES.includes(merged.audioSource)) merged.audioSource = 'both'
+      cache = merged
+      return cache
     }
   } catch (err) {
     console.error('settings: failed to read, using defaults', err)
@@ -96,7 +116,9 @@ export function getSettingsView(): SettingsView {
     voyageKeySet: !!decrypt(s.voyageKeyEnc)?.trim(),
     model: s.model,
     theme: THEMES.includes(s.theme) ? s.theme : DEFAULT_THEME,
-    systemAudioOnly: s.systemAudioOnly,
+    audioSource: s.audioSource,
+    // Derived, not stored twice: the one source of truth is audioSource.
+    systemAudioOnly: s.audioSource === 'system',
     calendarAutoRecord: s.calendarAutoRecord,
     notionTokenSet: !!decrypt(s.notionTokenEnc)?.trim(),
     notionParentPageId: s.notionParentPageId
@@ -123,8 +145,14 @@ export function updateSettings(update: SettingsUpdate): SettingsView {
   if (update.theme !== undefined && THEMES.includes(update.theme)) {
     s.theme = update.theme
   }
-  if (update.systemAudioOnly !== undefined) {
+  if (update.audioSource !== undefined && AUDIO_SOURCES.includes(update.audioSource)) {
+    s.audioSource = update.audioSource
+    s.systemAudioOnly = update.audioSource === 'system'
+  }
+  // Deprecated path, still accepted so an older renderer build keeps working.
+  if (update.systemAudioOnly !== undefined && update.audioSource === undefined) {
     s.systemAudioOnly = update.systemAudioOnly
+    s.audioSource = update.systemAudioOnly ? 'system' : 'both'
   }
   if (update.calendarAutoRecord !== undefined) {
     s.calendarAutoRecord = update.calendarAutoRecord
@@ -167,8 +195,11 @@ export function getModelCapabilities(): ModelOption {
   return modelCapabilities(getModel())
 }
 
-export function getSystemAudioOnly(): boolean {
-  return load().systemAudioOnly
+/** The default capture mode for a new recording. A note started from the UI
+ *  passes its own choice; this is the fallback for auto-record, MCP-driven
+ *  starts, and anything else with no per-note opinion. */
+export function getAudioSource(): AudioSource {
+  return load().audioSource
 }
 
 export function getCalendarAutoRecord(): boolean {

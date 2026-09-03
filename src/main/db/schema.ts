@@ -162,5 +162,54 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_note_entities_entity ON note_entities(entity_id);
   ALTER TABLE meetings ADD COLUMN entities_at INTEGER;
+  `,
+  // v11: per-note speaker identity. Deepgram offers no enrollment, no
+  // voiceprints and no exposed embeddings — it returns anonymous integers,
+  // renumbered from 0 on every connection — so a name can only ever be local,
+  // and one person can legitimately hold SEVERAL raw keys (a websocket
+  // reconnect, a re-recording). Hence identities, with many keys mapping onto
+  // one: merging a split speaker is a repoint, never a transcript rewrite. A
+  // name is never stamped onto a segment row, so one write relabels every line
+  // already stored AND every line still to arrive.
+  //
+  // speaker is NOT NULL here, with -1 for an undiarized channel — the same
+  // sentinel idx_segments_unique already coalesces to — because SQLite does not
+  // imply NOT NULL on PRIMARY KEY columns in a rowid table and would otherwise
+  // admit two rows for the same voice with neither winning. It also makes "Me"
+  // and "Them" nameable on notes recorded before diarization existed.
+  //
+  // audio_source records what a recording actually captured. It is not
+  // inferable after the fact, and it must be decided before audiotee.start():
+  // diarize is a connect-time Deepgram parameter and a Core Audio tap cannot be
+  // un-spawned. 'both' = one mic voice + system, 'room' = diarized mic only and
+  // no system tap, 'room_call' = diarized mic + system, 'system' = mic muted.
+  //
+  // Deliberately absent: no DELETE FROM chunks and no change to
+  // idx_segments_unique. The chunker is never given names and no existing row's
+  // rendered label changes, so every stored embedding stays valid — unlike v7,
+  // which had to discard them all.
+  `
+  CREATE TABLE speaker_identities (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    name        TEXT,
+    color_index INTEGER NOT NULL DEFAULT 0,
+    is_me       INTEGER NOT NULL DEFAULT 0 CHECK (is_me IN (0,1)),
+    source      TEXT NOT NULL DEFAULT 'user'
+                CHECK (source IN ('user','suggested')),
+    created_at  INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_speaker_identities_meeting ON speaker_identities(meeting_id);
+  CREATE UNIQUE INDEX idx_speaker_identity_me ON speaker_identities(meeting_id) WHERE is_me = 1;
+  CREATE TABLE speaker_keys (
+    meeting_id  TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    channel     TEXT NOT NULL CHECK (channel IN ('mic','system')),
+    speaker     INTEGER NOT NULL,
+    identity_id INTEGER NOT NULL REFERENCES speaker_identities(id) ON DELETE CASCADE,
+    PRIMARY KEY (meeting_id, channel, speaker)
+  );
+  CREATE INDEX idx_speaker_keys_identity ON speaker_keys(identity_id);
+  ALTER TABLE meetings ADD COLUMN audio_source TEXT NOT NULL DEFAULT 'both'
+    CHECK (audio_source IN ('both','room','room_call','system'));
   `
 ]

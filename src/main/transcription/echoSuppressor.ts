@@ -1,9 +1,13 @@
 // Cross-channel echo detection. Without headphones, audio another app plays
 // (Zoom, YouTube) reaches the mic acoustically — Chromium's echo cancellation
 // only cancels audio Chromium itself plays — so remote speech gets transcribed
-// on BOTH channels and shows up as "Me" and "Them" at once. The system channel
-// is canonical for remote audio: a mic segment that duplicates overlapping
-// system speech is an echo and should be dropped.
+// on BOTH channels and shows up twice, once from each. The system channel is
+// canonical for remote audio: a mic segment that duplicates overlapping system
+// speech is an echo and should be dropped.
+//
+// This only applies when both channels are live. An in-person recording has no
+// system channel at all, so there is nothing to match against and the Recorder
+// skips this entirely rather than running it empty (see Recorder.wantEcho).
 //
 // Matching is text+time based: token coverage of the mic text against the
 // union of system tokens in the overlapping window. Both channels anchor

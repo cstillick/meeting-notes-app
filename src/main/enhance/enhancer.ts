@@ -7,6 +7,7 @@ import { isRetryableApiStatus, thinkingParams } from '@shared/types'
 import { getAnthropicKey, getModelCapabilities } from '../settings'
 import { getMeeting, hasEnhancement, updateStatus } from '../db/meetings'
 import { getSegments } from '../db/transcripts'
+import { speakerNameMap } from '../db/speakers'
 import { SYSTEM_PROMPT, TRUNCATION_NOTE, buildUserMessage, promptBudget } from './prompt'
 
 /** Thinking tokens and the answer share this cap, so a long meeting can stop
@@ -78,6 +79,7 @@ export class Enhancer extends EventEmitter<{
                 startedAt: meeting.startedAt,
                 notesJson: meeting.notesJson,
                 segments,
+                names: speakerNameMap(meetingId),
                 budget: promptBudget(caps, SYSTEM_PROMPT.length)
               })
             }

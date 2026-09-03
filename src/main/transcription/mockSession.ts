@@ -5,7 +5,7 @@
 // speaker turns on the system channel, and (with MOCK_ECHO=1) cross-channel echo.
 import { EventEmitter } from 'events'
 import type { Channel } from '@shared/types'
-import type { SessionResult } from './deepgramSession'
+import type { SessionOptions, SessionResult } from './deepgramSession'
 
 // Per-channel phrase sets are deliberately disjoint: near-identical text on
 // both channels would (correctly) trip the echo suppressor.
@@ -28,6 +28,11 @@ const ECHO_PHRASES = [
   'this sentence was played out loud and picked up acoustically'
 ]
 const USE_ECHO = process.env['MOCK_ECHO'] === '1'
+// MOCK_LECTURE=1: an in-person recording. The system channel produces nothing
+// at all (there is no other app playing audio) and the mic carries several
+// voices, so the diarized-mic paths — stable index allocation, the flicker
+// dedupe, the skipped echo hold — are exercised without a Core Audio tap.
+const USE_LECTURE = process.env['MOCK_LECTURE'] === '1'
 
 export class MockDeepgramSession extends EventEmitter<{
   result: [SessionResult]
@@ -36,11 +41,13 @@ export class MockDeepgramSession extends EventEmitter<{
 }> {
   private timer: NodeJS.Timeout | null = null
   private connEpoch = 0
+  private diarEpoch = 0
   private n = 0
 
   constructor(
     _apiKey: string,
-    private label: Channel
+    private label: Channel,
+    private opts: SessionOptions = { diarize: label === 'system' }
   ) {
     super()
   }
@@ -51,6 +58,9 @@ export class MockDeepgramSession extends EventEmitter<{
   }
 
   private tick(): void {
+    // A lecture has no system audio at all: the tap would be silent, so the
+    // session emits nothing rather than fabricating remote speech.
+    if (USE_LECTURE && this.label === 'system') return
     const isEchoTick = USE_ECHO && this.n % 4 === 3
     const phrases = this.label === 'mic' ? MIC_PHRASES : SYSTEM_PHRASES
     const text = isEchoTick
@@ -60,16 +70,30 @@ export class MockDeepgramSession extends EventEmitter<{
     const base: Omit<SessionResult, 'isFinal'> = {
       text,
       startMs: this.connEpoch + start,
-      endMs: this.connEpoch + start + 1400
+      endMs: this.connEpoch + start + 1400,
+      speakerEpoch: this.diarEpoch
     }
-    // Diarization runs on the system channel only; rotate three speakers.
-    if (this.label === 'system') base.speaker = Math.floor(this.n / 3) % 3
+    // Rotate three speakers on whichever channel the Recorder asked to diarize.
+    if (this.opts.diarize) base.speaker = Math.floor(this.n / 3) % 3
     this.emit('result', { ...base, isFinal: false })
     this.emit('result', { ...base, isFinal: true })
-    // Simulate a Deepgram retransmit every 5th final
-    if (this.n % 5 === 4) this.emit('result', { ...base, isFinal: true })
-    // Simulate a reconnect (epoch reset) every 8th segment
-    if (this.n % 8 === 7) this.connEpoch = Date.now()
+    // Simulate a Deepgram retransmit every 5th final. In lecture mode the
+    // retransmit carries a DIFFERENT speaker index — streaming diarization
+    // flickers on replays — which is a duplicate row under the unique index
+    // unless commitFinal dedupes on text and time alone.
+    if (this.n % 5 === 4) {
+      const replay =
+        USE_LECTURE && base.speaker !== undefined
+          ? { ...base, speaker: (base.speaker + 1) % 3 }
+          : base
+      this.emit('result', { ...replay, isFinal: true })
+    }
+    // Simulate a reconnect (epoch reset) every 8th segment. Speaker numbering
+    // restarts with the connection, so the diarization epoch moves too.
+    if (this.n % 8 === 7) {
+      this.connEpoch = Date.now()
+      this.diarEpoch += 1
+    }
     this.n++
   }
 

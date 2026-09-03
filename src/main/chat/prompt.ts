@@ -1,5 +1,11 @@
 import type { ChatLiveFinal, Meeting, MeetingSummary } from '@shared/types'
-import { fitTranscript, MAX_NOTES_CHARS, pmToPlainText, type TranscriptLine } from '../enhance/prompt'
+import {
+  fitTranscript,
+  MAX_NOTES_CHARS,
+  pmToPlainText,
+  type SpeakerNames,
+  type TranscriptLine
+} from '../enhance/prompt'
 import { getDb } from '../db/database'
 import { listMeetings, listMeetingsInFolder } from '../db/meetings'
 import { searchMeetingIdsForChat } from '../db/search'
@@ -8,7 +14,8 @@ import { rrfMerge } from '../embeddings/lib'
 
 // Static system prompts (stable prefixes — cacheable).
 
-export const CHAT_MEETING_SYSTEM = `You are a meeting assistant. Answer questions about the meeting described in the context block using ONLY the provided rough notes, enhanced notes, and transcript. "Me" is the note-taker; "Speaker 1", "Speaker 2", … (or "Them" when the voice could not be distinguished) are other participants — use real names when the transcript reveals them.
+export const CHAT_MEETING_SYSTEM = `You are an assistant for one recording — a meeting, a lecture, or an interview. Answer questions about it using ONLY the provided rough notes, enhanced notes, and transcript.
+- Speaker labels: a name or role was assigned by the user and is authoritative. A numbered label ("Speaker 1", "Speaker 2 (room)") is a distinct voice, not a name — use a real name if the transcript reveals one, and "(room)" means that voice was in the room rather than on a call. "Me" is the note-taker's own microphone; an in-person or imported recording has no "Me" at all, so never assume the dominant speaker is the user.
 - Answer directly and concisely in Markdown. Lead with the answer, then supporting detail. Use bullets for lists and bold for key facts, dates, and numbers.
 - When quoting what someone said, quote the short verbatim phrase and add its timestamp, e.g. "we'll ship Friday" (12:41).
 - If the answer is not in the transcript or notes, say so plainly. Never invent details or speculate beyond what was said.
@@ -46,6 +53,10 @@ export function buildMeetingContext(args: {
    *  system prompt and the replayed history, so the transcript is trimmed
    *  against what is actually left rather than a fixed constant. */
   budget: number
+  /** User-assigned speaker names. Resolved on this side from the meeting id
+   *  rather than shipped per line, so a live-finals turn and a stored-rows turn
+   *  cannot label the same voice differently. */
+  names?: SpeakerNames
 }): string {
   const { meeting, budget } = args
   const lines = args.liveFinals ?? args.segments
@@ -54,7 +65,11 @@ export function buildMeetingContext(args: {
     0,
     Math.max(0, Math.min(MAX_ENHANCED_CHARS, budget - notes.length))
   )
-  const transcript = fitTranscript(lines, Math.max(0, budget - notes.length - enhanced.length))
+  const transcript = fitTranscript(
+    lines,
+    Math.max(0, budget - notes.length - enhanced.length),
+    args.names
+  )
   return `Meeting: ${meeting.title || 'Untitled meeting'}
 When: ${formatWhen(meeting.startedAt ?? meeting.createdAt)}
 Status: ${meeting.status === 'recording' ? 'IN PROGRESS (live)' : 'ended'}

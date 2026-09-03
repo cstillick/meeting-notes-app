@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AVAILABLE_MODELS, type Theme } from '@shared/types'
+import { AVAILABLE_MODELS, type AudioSource, type Theme } from '@shared/types'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { applyTheme } from '../../theme'
+
+/** Ordered by how common they are, so the default sits first. */
+export const AUDIO_SOURCE_OPTIONS: { value: AudioSource; label: string }[] = [
+  { value: 'both', label: 'Microphone + system audio (default)' },
+  { value: 'room', label: 'In person — one room, several voices' },
+  { value: 'room_call', label: 'In person + a call (hybrid room)' },
+  { value: 'system', label: 'System audio only (mute my mic)' }
+]
 
 const THEME_OPTIONS: { value: Theme; label: string }[] = [
   { value: 'light', label: 'Light mode' },
@@ -55,7 +63,7 @@ export default function SettingsView(): React.JSX.Element {
   const [notionParentPageId, setNotionParentPageId] = useState('')
   const [model, setModel] = useState('')
   const [theme, setTheme] = useState<Theme>('system')
-  const [systemAudioOnly, setSystemAudioOnly] = useState(false)
+  const [audioSource, setAudioSource] = useState<AudioSource>('both')
   const [calendarAutoRecord, setCalendarAutoRecord] = useState(false)
   const [saved, setSaved] = useState(false)
 
@@ -67,7 +75,7 @@ export default function SettingsView(): React.JSX.Element {
     if (settings) {
       setModel(settings.model)
       setTheme(settings.theme)
-      setSystemAudioOnly(settings.systemAudioOnly)
+      setAudioSource(settings.audioSource)
       setCalendarAutoRecord(settings.calendarAutoRecord)
       setNotionParentPageId(settings.notionParentPageId)
     }
@@ -88,7 +96,7 @@ export default function SettingsView(): React.JSX.Element {
       notionParentPageId,
       model,
       theme,
-      systemAudioOnly,
+      audioSource,
       calendarAutoRecord
     })
     setDeepgramKey('')
@@ -199,21 +207,24 @@ export default function SettingsView(): React.JSX.Element {
               System follows your macOS Appearance setting.
             </span>
           </label>
-          <label className="flex items-start gap-3">
-            <input
-              type="checkbox"
-              checked={systemAudioOnly}
-              onChange={(e) => setSystemAudioOnly(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-stone-300 text-amber-600 focus:ring-amber-500"
-            />
-            <span>
-              <span className="block text-sm font-medium text-stone-700">
-                Mute microphone (record system audio only)
-              </span>
-              <span className="mt-0.5 block text-xs text-stone-400">
-                Captures only what other participants say — your mic is never opened. Takes effect on
-                the next recording you start.
-              </span>
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-stone-700">Audio source</span>
+            <select
+              value={audioSource}
+              onChange={(e) => setAudioSource(e.target.value as AudioSource)}
+              className="w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-amber-500 focus:ring-1 focus:ring-amber-500 focus:outline-none"
+            >
+              {AUDIO_SOURCE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs text-stone-400">
+              In-person modes separate the voices on your microphone — lectures, interviews,
+              in-room meetings — and skip the system-audio tap. They also turn off noise
+              suppression and automatic gain, which blur the differences between voices. This is
+              the default for new recordings; you can change it per note before you hit Record.
             </span>
           </label>
           <label className="flex items-start gap-3">

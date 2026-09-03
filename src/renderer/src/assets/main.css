@@ -54,6 +54,17 @@ html.dark {
   --color-red-100: #351818;
   --color-red-200: #4a2222;
   --color-red-300: #5a2828;
+
+  /* Speaker palette (src/renderer/src/lib/speakers.ts). Each hue is used three
+     ways — a -100 bubble fill, a -400 rail/dot, and a -950 text — so the fills
+     flip to dark surfaces while the -400s stay vivid enough to tell eight
+     voices apart at a 8px dot. */
+  --color-sky-100: #10202c;
+  --color-violet-100: #1d1830;
+  --color-rose-100: #2c1520;
+  --color-cyan-100: #0d2427;
+  --color-lime-100: #1a2410;
+  --color-fuchsia-100: #2a1230;
 }
 
 /* Text shades that need a lighter value than their same-numbered background.
@@ -66,6 +77,34 @@ html.dark .text-green-700 {
 }
 html.dark .text-emerald-950 {
   color: #c7f9d8;
+}
+/* Speaker-bubble text: each sits on its own -100 fill, now a dark surface. */
+html.dark .text-sky-950 {
+  color: #cfe9fb;
+}
+html.dark .text-violet-950 {
+  color: #ddd6fe;
+}
+html.dark .text-rose-950 {
+  color: #fbd5e0;
+}
+html.dark .text-cyan-950 {
+  color: #cbf1f3;
+}
+html.dark .text-lime-950 {
+  color: #ddf3bd;
+}
+html.dark .text-fuchsia-950 {
+  color: #f5d0fe;
+}
+html.dark .text-stone-800 {
+  color: #ececec;
+}
+/* sky-100 doubles as the "transcribing…" badge background (MeetingList), which
+   pairs it with text-sky-700 — dark blue on the near-black the speaker palette
+   turned that variable into. Same pairing the red/green badges already have. */
+html.dark .text-sky-700 {
+  color: #7dd3fc;
 }
 html.dark .text-red-600 {
   color: #f87171;

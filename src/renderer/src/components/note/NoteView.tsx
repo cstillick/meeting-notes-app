@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import type { Channel, Meeting } from '@shared/types'
+import type { AudioSource, Channel, Meeting, SpeakerIdentity } from '@shared/types'
 import { useActiveMeetingStore, type Bubble } from '../../stores/activeMeetingStore'
 import { useEnhanceStore } from '../../stores/enhanceStore'
 import { useLibraryStore } from '../../stores/libraryStore'
@@ -16,6 +16,16 @@ import { registerFlush } from '../../flush'
 // Stable empty references: zustand selectors must not mint a new object per call.
 const NO_BUBBLES: Bubble[] = []
 const NO_INTERIM: Partial<Record<Channel, Bubble>> = {}
+const NO_SPEAKERS: SpeakerIdentity[] = []
+
+/** Short labels for the capture chip beside Record. The full explanations live
+ *  in Settings; this is a reminder, not a tutorial. */
+const SOURCE_CHIP: { value: AudioSource; label: string }[] = [
+  { value: 'both', label: 'Call' },
+  { value: 'room', label: 'In person' },
+  { value: 'room_call', label: 'In person + call' },
+  { value: 'system', label: 'System only' }
+]
 
 function RecordButton({ meetingId }: { meetingId: string }): React.JSX.Element {
   const recorderState = useActiveMeetingStore((s) => s.recorderState)
@@ -28,6 +38,13 @@ function RecordButton({ meetingId }: { meetingId: string }): React.JSX.Element {
   // The mic permission prompt can hold startRecording for seconds; recorderState
   // only arrives from main after that, so track the click locally too.
   const [pendingAction, setPendingAction] = useState<'start' | 'stop' | null>(null)
+  // null until the user picks: an unset chip means "use my default setting",
+  // which is what startRecording does with an omitted source.
+  const [source, setSource] = useState<AudioSource | null>(null)
+  // The route re-renders NoteView on a :id change rather than remounting it
+  // (hence this file's viewedId/pendingTitle refs), so without this the choice
+  // the user made for one note would follow them to the next one.
+  useEffect(() => setSource(null), [meetingId])
 
   const isThisMeeting = recordingMeetingId === meetingId
   const recording = isThisMeeting && (recorderState === 'recording' || recorderState === 'starting')
@@ -44,7 +61,7 @@ function RecordButton({ meetingId }: { meetingId: string }): React.JSX.Element {
       if (action === 'stop') {
         await stopRecording()
       } else {
-        await startRecording(meetingId)
+        await startRecording(meetingId, source ?? undefined)
       }
     } finally {
       setPendingAction(null)
@@ -68,16 +85,35 @@ function RecordButton({ meetingId }: { meetingId: string }): React.JSX.Element {
       )}
       {recording && !micMuted && (
         <div className="flex h-4 items-end gap-0.5" title="Mic level">
+          {/* micLevel is dBFS mapped onto 0..1 with a -60 floor, so the bars sit
+              at roughly -36, -27, -18 and -6 dBFS. Comparing against `t`
+              directly would need a full-scale (clipped) sample to light the top
+              bar and would light the bottom one on room tone. */}
           {[0.25, 0.5, 0.75, 1].map((t) => (
             <div
               key={t}
               className={`w-1 rounded-sm transition-all ${
-                micLevel >= t * 0.6 ? 'bg-green-500' : 'bg-stone-300'
+                micLevel >= 0.35 + t * 0.55 ? 'bg-green-500' : 'bg-stone-300'
               }`}
               style={{ height: `${t * 100}%` }}
             />
           ))}
         </div>
+      )}
+      {!recording && (
+        <select
+          value={source ?? ''}
+          onChange={(e) => setSource((e.target.value || null) as AudioSource | null)}
+          title="What to capture. In-person modes separate the voices on your microphone."
+          className="rounded-md border border-stone-200 bg-transparent px-1.5 py-1 text-xs text-stone-500 hover:border-stone-300 focus:border-amber-500 focus:outline-none"
+        >
+          <option value="">Default</option>
+          {SOURCE_CHIP.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
       )}
       <button
         onClick={toggle}
@@ -113,7 +149,30 @@ function TranscriptSidebar({ meetingId }: { meetingId: string }): React.JSX.Elem
   const interim = useActiveMeetingStore((s) =>
     s.recordingMeetingId === meetingId ? s.interim : NO_INTERIM
   )
-  return <TranscriptPanel finals={finals} interim={interim} />
+  const speakers = useActiveMeetingStore((s) =>
+    s.viewFinalsId === meetingId ? s.speakers : NO_SPEAKERS
+  )
+  const renameSpeaker = useActiveMeetingStore((s) => s.renameSpeaker)
+  const setSpeakerIsMe = useActiveMeetingStore((s) => s.setSpeakerIsMe)
+  const mergeSpeakers = useActiveMeetingStore((s) => s.mergeSpeakers)
+  const suggestSpeakers = useActiveMeetingStore((s) => s.suggestSpeakers)
+  const acceptSuggestion = useActiveMeetingStore((s) => s.acceptSuggestion)
+  return (
+    <TranscriptPanel
+      finals={finals}
+      interim={interim}
+      speakers={speakers}
+      onRename={(channel, speaker, name) =>
+        void renameSpeaker(meetingId, channel, speaker, name)
+      }
+      onSetMe={(channel, speaker) => void setSpeakerIsMe(meetingId, channel, speaker)}
+      onMerge={(from, into) => void mergeSpeakers(meetingId, from, into)}
+      onSuggest={() => suggestSpeakers(meetingId)}
+      onAccept={(channel, speaker, name) =>
+        void acceptSuggestion(meetingId, channel, speaker, name)
+      }
+    />
+  )
 }
 
 /** Keeps the ~10/sec streaming buffer out of NoteView's own subscriptions. */
@@ -133,6 +192,9 @@ export default function NoteView(): React.JSX.Element {
   const recordingMeetingId = useActiveMeetingStore((s) => s.recordingMeetingId)
   const statusDetail = useActiveMeetingStore((s) => s.statusDetail)
   const degraded = useActiveMeetingStore((s) => s.degraded.length > 0)
+  const captureWarning = useActiveMeetingStore((s) => s.captureWarning)
+  const startRecordingFor = useActiveMeetingStore((s) => s.startRecording)
+  const stopRecordingNow = useActiveMeetingStore((s) => s.stopRecording)
   const hasTranscript = useActiveMeetingStore((s) =>
     s.recordingMeetingId === id
       ? s.finals.length > 0
@@ -172,7 +234,8 @@ export default function NoteView(): React.JSX.Element {
           text: s.text,
           startMs: s.startMs,
           speaker: s.speaker ?? undefined
-        }))
+        })),
+        result.speakers
       )
     })
   }, [id])
@@ -347,15 +410,30 @@ export default function NoteView(): React.JSX.Element {
         </div>
       )}
 
-      {statusDetail && recordingMeetingId === id && (
+      {(statusDetail || captureWarning) && recordingMeetingId === id && (
         <div
-          className={`border-b px-6 py-1 text-xs ${
+          className={`flex items-center gap-3 border-b px-6 py-1 text-xs ${
             degraded
               ? 'border-red-200 bg-red-50 text-red-700'
               : 'border-amber-200 bg-amber-50 text-amber-800'
           }`}
         >
-          {statusDetail}
+          <span>{statusDetail ?? captureWarning}</span>
+          {/* The mode cannot be switched in place — diarize is set when the
+              websocket opens and the tap is already spawned — so the fix is an
+              explicit restart. baseOffsetMs makes the second session append past
+              the first rather than interleave with it. */}
+          {statusDetail?.includes('recording in person?') && id && (
+            <button
+              type="button"
+              onClick={() => {
+                void stopRecordingNow().then(() => startRecordingFor(id, 'room'))
+              }}
+              className="rounded border border-amber-300 px-1.5 py-0.5 font-medium hover:bg-amber-100"
+            >
+              Restart in In-person mode
+            </button>
+          )}
         </div>
       )}
 

@@ -10,6 +10,7 @@
 // transaction, so a query issued while the app is recording sees every final
 // committed so far. No cache to invalidate.
 import { DatabaseSync } from 'node:sqlite'
+import { speakerKey } from '../main/enhance/prompt.ts'
 import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -63,6 +64,10 @@ export interface Library {
   /** False on a pre-v4 database — folder columns are absent, so folder
    *  filtering and folder names degrade instead of throwing. */
   hasFolders: boolean
+  /** The v11 speaker-roster tables. A newer MCP build must degrade to generated
+   *  labels against an older library rather than throwing, exactly as
+   *  hasFolders does for a pre-v4 one. */
+  hasSpeakerRoster: boolean
 }
 
 function openHandle(path: string, readOnly: boolean): DatabaseSync {
@@ -112,7 +117,9 @@ export function openLibrary(path: string): Library {
     }
   }
   const hasFolders = tableExists(db, 'folders') && columnExists(db, 'meetings', 'folder_id')
-  return { db, path, mode, hasFolders }
+  const hasSpeakerRoster =
+    tableExists(db, 'speaker_identities') && tableExists(db, 'speaker_keys')
+  return { db, path, mode, hasFolders, hasSpeakerRoster }
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +546,27 @@ export function getSegments(
     startMs: r.start_ms,
     speaker: r.speaker
   }))
+}
+
+/** User-assigned speaker names for one note, keyed by speakerKey(). Empty on a
+ *  library predating the roster tables, which makes every caller's speakerLabel
+ *  fall back to the generated label — the same output this server produced
+ *  before names existed. */
+export function speakerNames(lib: Library, meetingId: string): Map<string, string> {
+  const map = new Map<string, string>()
+  if (!lib.hasSpeakerRoster) return map
+  const rows = lib.db
+    .prepare(
+      `SELECT k.channel AS channel, k.speaker AS speaker, i.name AS name
+         FROM speaker_keys k
+         JOIN speaker_identities i ON i.id = k.identity_id
+        WHERE k.meeting_id = ? AND i.name IS NOT NULL AND i.name <> ''`
+    )
+    .all(meetingId) as unknown as { channel: 'mic' | 'system'; speaker: number; name: string }[]
+  for (const r of rows) {
+    map.set(speakerKey(r.channel, r.speaker === -1 ? null : r.speaker), r.name)
+  }
+  return map
 }
 
 // ---------------------------------------------------------------------------

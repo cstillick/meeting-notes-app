@@ -1,5 +1,6 @@
 import type { MeetingSummary } from '@shared/types'
 import { pmToPlainText, type TranscriptLine } from '../enhance/prompt'
+import { assignedNames } from './speakers'
 import { getDb } from './database'
 import { listMeetings } from './meetings'
 import { rebuildChunks } from './chunks'
@@ -64,12 +65,21 @@ export function reindexMeeting(meetingId: string): void {
     speaker: r.speaker
   }))
 
-  // FTS gets the flat join: it tokenizes anyway, and timestamp/speaker prefixes
-  // would only add junk tokens.
+  // FTS gets the flat join: it tokenizes anyway, and per-line timestamp/speaker
+  // prefixes would only add junk tokens. A handful of real assigned names is a
+  // different matter — "the lecture where Dr. Alvarez spoke" has to be findable
+  // — and this is the ONLY place they enter the index. They deliberately do not
+  // reach rebuildChunks below: chunk text is the embedding cache key, so a
+  // rename would rewrite and re-embed every affected chunk.
+  // Appended only when there are names: an empty element would still
+  // contribute its ' ' separator, and scripts/stress/mcp-writes.ts asserts this
+  // body is byte-identical to the one src/mcp/writes.ts builds for the same note.
+  const names = assignedNames(meetingId)
   const body = [
     pmToText(meeting.notes_json),
     meeting.enhanced_md ?? '',
-    segments.map((s) => s.text).join(' ')
+    segments.map((s) => s.text).join(' '),
+    ...(names.length > 0 ? [names.join(' ')] : [])
   ].join(' ')
 
   // SAVEPOINT (not BEGIN): callers may already hold a transaction.

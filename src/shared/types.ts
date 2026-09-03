@@ -9,6 +9,9 @@ export interface Meeting {
   status: MeetingStatus
   /** Folder this note lives in; null = unfiled (shown under "All notes"). */
   folderId: string | null
+  /** What this recording captured. 'both' for every note recorded before the
+   *  setting existed, and for anything that was never recorded. */
+  audioSource: AudioSource
   notesJson: string
   enhancedJson: string | null
   enhancedMd: string | null
@@ -34,6 +37,17 @@ export interface Folder {
 
 export type Channel = 'mic' | 'system'
 
+/** What a recording captured. Chosen before capture starts, because `diarize`
+ *  is a connect-time Deepgram parameter and the Core Audio tap cannot be
+ *  un-spawned — so this can never be switched mid-recording.
+ *  - 'both'      mic (assumed one voice, "Me") + system audio. The default.
+ *  - 'room'      mic only, diarized. In-person lectures, interviews, standups.
+ *  - 'room_call' diarized mic + system audio. A room joined to a call.
+ *  - 'system'    system audio only; the mic is never opened. */
+export type AudioSource = 'both' | 'room' | 'room_call' | 'system'
+
+export const AUDIO_SOURCES: readonly AudioSource[] = ['both', 'room', 'room_call', 'system']
+
 export interface TranscriptSegment {
   id: number
   meetingId: string
@@ -41,8 +55,30 @@ export interface TranscriptSegment {
   text: string
   startMs: number
   endMs: number
-  /** Diarized speaker index on the system channel; null for mic and legacy rows. */
+  /** Stable speaker index within (meeting, channel), allocated by the Recorder;
+   *  null when that channel was not diarized. Mic and system indices are
+   *  separate namespaces — mic 0 and system 0 are different people. */
   speaker: number | null
+}
+
+/** One distinct voice in a note, with whatever identity the user has given it.
+ *  Built by db/speakers.ts from the transcript's own keys joined to the roster,
+ *  so a voice appears here the moment it first speaks, named or not. */
+export interface SpeakerIdentity {
+  /** Roster row, or null when nobody has named/merged this voice yet. */
+  identityId: number | null
+  channel: Channel
+  /** null = this channel was not diarized (stored as the -1 sentinel). */
+  speaker: number | null
+  /** Resolved display label: the assigned name, else the generated one. */
+  label: string
+  name: string | null
+  colorIndex: number
+  isMe: boolean
+  source: 'user' | 'suggested' | null
+  lineCount: number
+  talkMs: number
+  firstMs: number
 }
 
 /** Live segment streamed to the renderer; interim segments replace the open bubble. */
@@ -55,6 +91,8 @@ export interface LiveSegment {
   startMs: number
   endMs: number
   isFinal: boolean
+  /** Stable speaker index within (meeting, channel); undefined when that
+   *  channel was not diarized. Mic and system are separate namespaces. */
   speaker?: number
   /** Echo suppression retracted this segment — clear any open bubble for the channel. */
   suppressed?: boolean
@@ -84,7 +122,11 @@ export interface SettingsView {
   voyageKeySet: boolean
   model: string
   theme: Theme
-  /** Mute the mic: record only system audio (what the other participants say). */
+  /** Default capture mode for new recordings; each note can override it before
+   *  Record and stores what it actually used. */
+  audioSource: AudioSource
+  /** @deprecated Derived from `audioSource === 'system'`. Kept so older
+   *  renderer code and any persisted settings.json keep working. */
   systemAudioOnly: boolean
   /** Start recording automatically when a calendar meeting begins. */
   calendarAutoRecord: boolean
@@ -100,6 +142,8 @@ export interface SettingsUpdate {
   voyageKey?: string
   model?: string
   theme?: Theme
+  audioSource?: AudioSource
+  /** @deprecated Write `audioSource` instead; true maps to 'system', false to 'both'. */
   systemAudioOnly?: boolean
   calendarAutoRecord?: boolean
   notionToken?: string

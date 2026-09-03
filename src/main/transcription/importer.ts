@@ -113,6 +113,35 @@ class Importer extends EventEmitter {
     this.emit('status', status)
   }
 
+  /** One upload attempt. Separated so the diarizer-version fallback below can
+   *  retry the whole request with different parameters — a Response body can
+   *  only be read once, so the retry needs a fresh request, not a re-read. */
+  private async post(
+    filePath: string,
+    size: number,
+    apiKey: string,
+    params: URLSearchParams
+  ): Promise<Response> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), TRANSCRIBE_TIMEOUT_MS)
+    try {
+      return await fetch(`${DEEPGRAM_LISTEN}?${params}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Token ${apiKey}`,
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(size)
+        },
+        body: createReadStream(filePath),
+        // Node fetch requires this for a streamed request body.
+        duplex: 'half',
+        signal: controller.signal
+      } as RequestInit)
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+
   private async transcribe(
     meetingId: string,
     filePath: string,
@@ -121,42 +150,55 @@ class Importer extends EventEmitter {
   ): Promise<void> {
     const startedAt = Date.now()
     try {
+      // diarize_model selects the v2 batch diarizer; the plain `diarize=true`
+      // this used to send is deprecated and routes to v1. The two are mutually
+      // exclusive — sending both is rejected — so this is a replace, not an
+      // add. Batch-only: the parameter is not accepted on streaming requests,
+      // which is why the live sockets stay on v1 (deepgramSession.ts).
+      // utt_split raises the pause that ends an utterance from 0.8s to 1.5s, so
+      // a lecturer pausing to write on the board stops fragmenting one
+      // explanation into a dozen utterances — each a fresh chance for the
+      // diarizer to flip the speaker label.
       const params = new URLSearchParams({
         model: 'nova-3',
         smart_format: 'true',
         punctuate: 'true',
-        diarize: 'true',
+        diarize_model: 'latest',
+        utt_split: '1.5',
         utterances: 'true'
       })
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), TRANSCRIBE_TIMEOUT_MS)
-      let response: Response
-      try {
-        response = await fetch(`${DEEPGRAM_LISTEN}?${params}`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Token ${apiKey}`,
-            'Content-Type': 'application/octet-stream',
-            'Content-Length': String(size)
-          },
-          body: createReadStream(filePath),
-          // Node fetch requires this for a streamed request body.
-          duplex: 'half',
-          signal: controller.signal
-        } as RequestInit)
-      } finally {
-        clearTimeout(timeout)
-      }
+      let response = await this.post(filePath, size, apiKey, params)
       if (!response.ok) {
         const detail = (await response.text()).slice(0, 300)
-        throw new Error(`Deepgram error ${response.status}: ${detail}`)
+        // An account or region that does not know diarize_model must still be
+        // able to import: fall back once to the legacy parameters rather than
+        // failing the whole job over a quality flag.
+        if (response.status === 400 && detail.includes('diarize_model')) {
+          console.warn('import: diarize_model rejected, retrying with legacy diarize=true')
+          const legacy = new URLSearchParams({
+            model: 'nova-3',
+            smart_format: 'true',
+            punctuate: 'true',
+            diarize: 'true',
+            utterances: 'true'
+          })
+          response = await this.post(filePath, size, apiKey, legacy)
+          if (!response.ok) {
+            const retryDetail = (await response.text()).slice(0, 300)
+            throw new Error(`Deepgram error ${response.status}: ${retryDetail}`)
+          }
+        } else {
+          throw new Error(`Deepgram error ${response.status}: ${detail}`)
+        }
       }
       const json = (await response.json()) as DeepgramPrerecorded
       const utterances = json.results?.utterances ?? []
 
       // Everything imported is 'system' channel: the mic convention ("Me")
-      // only applies to live capture — a recording's voices are all "others",
-      // diarized into Speaker 1, 2, ….
+      // only applies to live capture. An imported file has no note-taker voice
+      // at all — nothing in it identifies which speaker holds the phone — so
+      // its roster gets no "Me" and every voice lands as Speaker 1, 2, …,
+      // renameable exactly like a live recording's (db/speakers.ts).
       withTransaction(() => {
         for (const u of utterances) {
           const text = u.transcript.trim()
